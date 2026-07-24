@@ -434,9 +434,9 @@ func TestWalkOrderNamesAndPositions(t *testing.T) {
 			t.Errorf("stage %d = %+v, want kind=%q type=%s pos=%d", i, infos[i], kind, typ, pos)
 		}
 	}
-	check(0, "", StageObserver, 0)         // OnAny
-	check(1, KindOther, StageObserver, 0)  // OnOther
-	check(2, "", StageMiddleware, 0)       // Use
+	check(0, "", StageObserver, 0)        // OnAny
+	check(1, KindOther, StageObserver, 0) // OnOther
+	check(2, "", StageMiddleware, 0)      // Use
 	check(3, KindToolPre, StageHandler, 0)
 	check(4, KindToolPre, StageHandler, 1)
 	check(5, KindStop, StageHandler, 0)

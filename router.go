@@ -131,6 +131,7 @@ func (d coreDecision) Kind() DecisionKind    { return d.core.kind }
 func (d coreDecision) Reason() string        { return d.core.reason }
 func (d coreDecision) SystemMessage() string { return d.core.systemMessage }
 func (d coreDecision) Context() []string     { return d.core.contextCopy() }
+func (d coreDecision) Blocks() bool          { return d.core.blocks() }
 func (d coreDecision) decCore() decisionCore { return d.core }
 
 // Any composes handlers into one handler with the same semantics as stacked

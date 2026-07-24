@@ -71,6 +71,14 @@ type Decision interface {
 	SystemMessage() string
 	Context() []string
 
+	// Blocks reports whether the decision prevents the gated action: true
+	// exactly for the kinds whose intent is "the action is prevented" —
+	// DecisionDeny and DecisionBlockPrompt today. An ask is not blocking
+	// (it defers to a human), and every observe/continue kind is false.
+	// Consumers branch on this instead of enumerating kinds; a blocking
+	// kind added later will return true here without call-site changes.
+	Blocks() bool
+
 	decCore() decisionCore
 }
 
@@ -86,6 +94,17 @@ type decisionCore struct {
 	hasUpdatedInput   bool
 	replacedOutput    any
 	hasReplacedOutput bool
+}
+
+// blocks is the single source of truth for Decision.Blocks: only the kinds
+// whose intent is "the action is prevented" are blocking.
+func (c decisionCore) blocks() bool {
+	switch c.kind {
+	case DecisionDeny, DecisionBlockPrompt:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c decisionCore) withContext(s string) decisionCore {
@@ -162,6 +181,9 @@ func (d ToolPreDecision) SystemMessage() string { return d.core.systemMessage }
 // Context reports the context strings attached with WithContext.
 func (d ToolPreDecision) Context() []string { return d.core.contextCopy() }
 
+// Blocks reports whether the decision prevents the gated action.
+func (d ToolPreDecision) Blocks() bool { return d.core.blocks() }
+
 // UpdatedInput reports the rewritten tool arguments and whether a rewrite
 // was attached with WithUpdatedInput.
 func (d ToolPreDecision) UpdatedInput() (any, bool) {
@@ -209,6 +231,9 @@ func (d PromptDecision) SystemMessage() string { return d.core.systemMessage }
 // Context reports the context strings attached with WithContext.
 func (d PromptDecision) Context() []string { return d.core.contextCopy() }
 
+// Blocks reports whether the decision prevents the gated action.
+func (d PromptDecision) Blocks() bool { return d.core.blocks() }
+
 func (d PromptDecision) decCore() decisionCore { return d.core }
 
 // StopDecision responds to agent.stop / subagent.stop.
@@ -241,6 +266,9 @@ func (d StopDecision) SystemMessage() string { return d.core.systemMessage }
 
 // Context reports the context strings attached to the decision.
 func (d StopDecision) Context() []string { return d.core.contextCopy() }
+
+// Blocks reports whether the decision prevents the gated action.
+func (d StopDecision) Blocks() bool { return d.core.blocks() }
 
 // Instruction reports the ContinueWith payload.
 func (d StopDecision) Instruction() string { return d.core.instruction }
@@ -297,6 +325,9 @@ func (d ToolPostDecision) SystemMessage() string { return d.core.systemMessage }
 // Context reports the context strings attached with WithContext.
 func (d ToolPostDecision) Context() []string { return d.core.contextCopy() }
 
+// Blocks reports whether the decision prevents the gated action.
+func (d ToolPostDecision) Blocks() bool { return d.core.blocks() }
+
 // ReplacedOutput reports the substituted tool output and whether the
 // decision was constructed with ReplaceOutput.
 func (d ToolPostDecision) ReplacedOutput() (any, bool) {
@@ -333,5 +364,8 @@ func (d SessionStartDecision) SystemMessage() string { return d.core.systemMessa
 
 // Context reports the context strings attached with WithContext.
 func (d SessionStartDecision) Context() []string { return d.core.contextCopy() }
+
+// Blocks reports whether the decision prevents the gated action.
+func (d SessionStartDecision) Blocks() bool { return d.core.blocks() }
 
 func (d SessionStartDecision) decCore() decisionCore { return d.core }

@@ -97,6 +97,49 @@ func TestDecisionReadAccessors(t *testing.T) {
 	}
 }
 
+// TestDecisionBlocks is the truth table for the Blocks classification over
+// every decision constructor: true exactly for the kinds whose intent is
+// "the action is prevented" (deny, block-prompt). An ask defers to a human —
+// it does not block.
+func TestDecisionBlocks(t *testing.T) {
+	cases := []struct {
+		name     string
+		decision Decision
+		want     bool
+	}{
+		// tool.pre / permission.request
+		{"NoDecision", NoDecision(), false},
+		{"Allow", Allow(), false},
+		{"Deny", Deny("no shells"), true},
+		{"AskUser", AskUser("confirm?"), false},
+		// prompt.submitted
+		{"AcceptPrompt", AcceptPrompt(), false},
+		{"BlockPrompt", BlockPrompt("secrets"), true},
+		// agent.stop / subagent.stop
+		{"Finish", Finish(), false},
+		{"ContinueWith", ContinueWith("keep going"), false},
+		// tool.post / tool.error
+		{"Observed", Observed(), false},
+		{"FlagOutput", FlagOutput("stale"), false},
+		{"ReplaceOutput", ReplaceOutput("redacted"), false},
+		// session.start
+		{"ContinueSession", ContinueSession(), false},
+	}
+	for _, tc := range cases {
+		if got := tc.decision.Blocks(); got != tc.want {
+			t.Errorf("%s.Blocks() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	var zero ToolPreDecision
+	if zero.Blocks() {
+		t.Error("zero-value (neutral) decision must not block")
+	}
+	if !Deny("x").WithContext("c").WithSystemMessage("s").Blocks() {
+		t.Error("modifiers must not change the Blocks classification")
+	}
+}
+
 func TestContextAccessorDoesNotAlias(t *testing.T) {
 	d := NoDecision().WithContext("keep")
 	got := d.Context()

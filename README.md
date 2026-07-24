@@ -159,8 +159,10 @@ Codex trust-hash pre-seeding.
   provider's own permission flow; it never force-allows.
 - Decisions are readable: `DecisionKind` constants (`DecisionDeny`,
   `DecisionAsk`, ...) with `String()` for logs, read accessors on every
-  decision type, and the common `Decision` interface returned by
-  `Runner.Decide` and middleware.
+  decision type — including `Blocks()`, true exactly when the decision
+  prevents the action (deny, block-prompt), so boundaries never enumerate
+  kinds — and the common `Decision` interface returned by `Runner.Decide`
+  and middleware.
 - Capability degradation is explicit: `Policy.Unsupported` chooses `Degrade`
   (nearest supported intent, logged) or `Strict` (handler error →
   `Policy.Fail`). Check `e.Can(agenthooks.CapAsk)` when you care.

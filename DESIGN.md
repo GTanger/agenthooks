@@ -342,7 +342,11 @@ gate; an exhausted pipeline is `NoDecision`.
 itself readable. `DecisionKind` is the exported outcome enum
 (`DecisionNoDecision`, `DecisionDeny`, `DecisionAsk`, … — append-only int
 values, `String()` for logs), and every decision type carries read accessors:
-`Kind()`, `Reason()`, `SystemMessage()`, `Context()`, plus kind-specific
+`Kind()`, `Reason()`, `SystemMessage()`, `Context()`, `Blocks()` — the
+classification predicate, true exactly for the kinds whose intent is "the
+action is prevented" (deny, block-prompt; an ask defers to a human and is
+not blocking), so boundaries branch on it instead of enumerating kinds and
+pick up future blocking kinds automatically — plus kind-specific
 `Instruction()` (`StopDecision`), `UpdatedInput()` (`ToolPreDecision`), and
 `ReplacedOutput()` (`ToolPostDecision`). `Decision` is the sealed read-only
 interface all five types satisfy; consumers type-assert to the concrete type
