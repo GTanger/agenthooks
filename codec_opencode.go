@@ -249,12 +249,12 @@ func opencodePromptText(output json.RawMessage) string {
 func encodeOpenCodeReply(_ any, base *Event, d decisionCore) (*opencodeReply, error) {
 	reply := &opencodeReply{}
 	switch d.kind {
-	case decDeny, decBlockPrompt:
+	case DecisionDeny, DecisionBlockPrompt:
 		reply.Error = d.reason
 		if reply.Error == "" {
 			reply.Error = "blocked by agenthooks handler"
 		}
-	case decAsk:
+	case DecisionAsk:
 		// Degraded before encode; reaching here is a policy-layer bug.
 		return nil, ErrUnsupportedDecision
 	}

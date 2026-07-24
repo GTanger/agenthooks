@@ -126,15 +126,15 @@ func encodeGemini(typed any, base *Event, d decisionCore) (wireResponse, error) 
 	switch base.Kind {
 	case KindToolPre:
 		switch d.kind {
-		case decAllow:
+		case DecisionAllow:
 			out["decision"] = "approve"
 			if d.reason != "" {
 				out["reason"] = d.reason
 			}
-		case decDeny:
+		case DecisionDeny:
 			out["decision"] = "block"
 			out["reason"] = d.reason
-		case decAsk:
+		case DecisionAsk:
 			// Undocumented upstream but honored (§4.1).
 			out["decision"] = "ask"
 			out["reason"] = d.reason
@@ -155,7 +155,7 @@ func encodeGemini(typed any, base *Event, d decisionCore) (wireResponse, error) 
 			hso["additionalContext"] = ctx
 		}
 	case KindPromptSubmitted:
-		if d.kind == decBlockPrompt {
+		if d.kind == DecisionBlockPrompt {
 			out["decision"] = "block"
 			out["reason"] = d.reason
 		}
@@ -167,12 +167,12 @@ func encodeGemini(typed any, base *Event, d decisionCore) (wireResponse, error) 
 			hso["additionalContext"] = ctx
 		}
 	case KindStop:
-		if d.kind == decContinue {
+		if d.kind == DecisionContinue {
 			out["decision"] = "block"
 			out["reason"] = d.instruction
 		}
 	case KindToolPost, KindToolError:
-		if d.kind == decFlagOutput {
+		if d.kind == DecisionFlagOutput {
 			out["decision"] = "block"
 			out["reason"] = d.reason
 		}

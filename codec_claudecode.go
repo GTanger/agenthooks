@@ -147,15 +147,15 @@ func encodeClaude(base *Event, d decisionCore) (wireResponse, error) {
 	switch base.Kind {
 	case KindToolPre, KindPermission:
 		switch d.kind {
-		case decAllow:
+		case DecisionAllow:
 			hso["permissionDecision"] = "allow"
 			if d.reason != "" {
 				hso["permissionDecisionReason"] = d.reason
 			}
-		case decDeny:
+		case DecisionDeny:
 			hso["permissionDecision"] = "deny"
 			hso["permissionDecisionReason"] = d.reason
-		case decAsk:
+		case DecisionAsk:
 			hso["permissionDecision"] = "ask"
 			hso["permissionDecisionReason"] = d.reason
 		}
@@ -166,7 +166,7 @@ func encodeClaude(base *Event, d decisionCore) (wireResponse, error) {
 			hso["additionalContext"] = ctx
 		}
 	case KindPromptSubmitted:
-		if d.kind == decBlockPrompt {
+		if d.kind == DecisionBlockPrompt {
 			out["decision"] = "block"
 			out["reason"] = d.reason
 		}
@@ -178,12 +178,12 @@ func encodeClaude(base *Event, d decisionCore) (wireResponse, error) {
 			hso["additionalContext"] = ctx
 		}
 	case KindStop, KindSubagentStop:
-		if d.kind == decContinue {
+		if d.kind == DecisionContinue {
 			out["decision"] = "block"
 			out["reason"] = d.instruction
 		}
 	case KindToolPost, KindToolError:
-		if d.kind == decFlagOutput {
+		if d.kind == DecisionFlagOutput {
 			out["decision"] = "block"
 			out["reason"] = d.reason
 		}

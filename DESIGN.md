@@ -122,8 +122,10 @@ func main() {
 
 Notes:
 
-- One handler per unified event kind; `OnAny` is additive (observe-only) and
-  runs regardless. Typed handlers gate/mutate; `OnAny` never does.
+- Registration per unified event kind is variadic and stacks: handler stages
+  run in order and the first conclusive decision wins (§3.5). `OnAny` is
+  additive (observe-only) and runs regardless. Typed handlers gate/mutate;
+  `OnAny` never does.
 - `Main` never lets handler panics/errors leak as garbage on stdout. Outcome on
   error follows `Policy.Fail` and the provider's actual blocking mechanism
   (exit 2, deny body, `failClosed` flag — see §6).
@@ -285,6 +287,87 @@ providers that omit ids.
 Everything in the last row is still fully deliverable via `OnAny` /
 `OnOther(nativeName, …)` with typed native structs — "unmapped" never means
 "unavailable".
+
+### 3.5 Event router
+
+Handler registration is a composable event router. The composable unit is the
+handler func type itself (the `http.Handler`/middleware idiom): combinators
+take handlers and return handlers, so leaves and compositions register
+identically.
+
+**Registration is variadic and stacks.** `OnToolPre(hs ...)` and its siblings
+accept any number of handlers, and repeated calls append. Stages run in
+registration order; a neutral decision (the zero value —
+`Kind() == DecisionNoDecision`) falls through, and the first conclusive
+decision wins. A lone handler behaves exactly as it did before registration
+stacked: when every stage stays neutral the neutrals merge (contexts append
+in order, `StopAgent` sticky) instead of being dropped, so an enriched
+neutral (`NoDecision().WithContext(…)`) still reaches the wire.
+
+**Combinators** are generic over the event/decision pairs — one
+implementation covers all five gating kinds and call sites never write a type
+parameter — and observe the closure property: each returns the same func type
+it takes, so compositions nest and register like leaves.
+
+- `Any(hs…)` — handlers run in order, the first conclusive decision wins and
+  short-circuits the rest; order is priority. Identical semantics to stacked
+  registration — one rule everywhere. A handler error aborts immediately.
+- `All(hs…)` — every handler runs (no short-circuit: all findings and side
+  effects are recorded), then the results merge: the most restrictive kind
+  wins (deny > ask > allow > neutral; continue > finish; replace-output >
+  flag-output > observed; ties go to the earliest), `Context` appends from
+  all decisions in order, the winner's other fields are taken wholesale, and
+  `StopAgent` is sticky. Errors: every handler still runs, the errors are
+  joined (`errors.Join`), and any error aborts the combinator.
+- `When(m, h)` — guard combinator: `h` runs only when the event carries a
+  tool call the matcher matches; otherwise the stage is neutral. Events
+  without a tool call never match.
+
+**Matchers.** `Matcher` is a one-method interface (`Matches(ToolCall) bool`),
+so custom matchers (e.g. CEL-backed) plug in without library dependencies.
+The shipped constructors — `MatchTools(…)`, `MatchMCP(…)`,
+`MatchCanonical(…)` — wrap the existing `ToolMatcher` (§7). Guarding lives in
+`When`, keeping the API to one concept: handlers composing into handlers.
+
+**Middleware.** `Use(i Interceptor)` wraps the typed-handler pipeline,
+outermost first. An interceptor receives the typed event and the rest of the
+pipeline as `next` (`Next func(ctx, typed any) (Decision, error)`); it may
+transform the normalized projection in place (`Tool.Input`, prompt text —
+`Raw`/`RawInput` stay verbatim per §5), short-circuit by returning without
+calling next, or post-process next's decision. Interceptors call next at most
+once. `OnAny`/`OnOther` observers run before the middleware chain and never
+gate; an exhausted pipeline is `NoDecision`.
+
+**Decision outcomes.** No separate outcome type: the winning decision is
+itself readable. `DecisionKind` is the exported outcome enum
+(`DecisionNoDecision`, `DecisionDeny`, `DecisionAsk`, … — append-only int
+values, `String()` for logs), and every decision type carries read accessors:
+`Kind()`, `Reason()`, `SystemMessage()`, `Context()`, plus kind-specific
+`Instruction()` (`StopDecision`), `UpdatedInput()` (`ToolPreDecision`), and
+`ReplacedOutput()` (`ToolPostDecision`). `Decision` is the sealed read-only
+interface all five types satisfy; consumers type-assert to the concrete type
+when they need kind-specific fields.
+
+**`Runner.Decide(ctx, typed) (Decision, error)`** runs the router pipeline —
+observers, middleware, typed handlers — and returns the winning decision with
+no wire encoding, no capability degradation (§4.1 is an edge/wire concern:
+degrading an ask server-side would collapse it before the caller's boundary
+can render it), and no MCP transport resolution. Stage errors (panics
+included, converted) return as errors; the caller owns failure semantics. A
+neutral outcome is the zero decision. `Run`/`Main` remain the edge path: the
+same pipeline slots in where single-handler dispatch used to be, and
+`Policy`-driven failure handling, capability degradation, and wire encoding
+continue unchanged after it.
+
+**Introspection.** `Walk(fn func(StageInfo) error)` visits the registered
+top-level stages in dispatch order — OnAny observers, OnOther observers,
+middleware (outermost first), then typed handlers grouped by event kind —
+with `StageInfo{Kind, Type, Name, Pos}`. Names are the reflected function
+names — good for named funcs and method values; anonymous closures report
+their compiler-assigned closure names. Known trade-off: combinator internals
+are opaque to Walk — bare funcs carry no metadata — and a richer
+introspectable interface can be layered on later without breaking the
+func-type API.
 
 ---
 
