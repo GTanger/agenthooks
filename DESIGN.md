@@ -167,6 +167,11 @@ type Event struct {
 
 	// Raw is the verbatim provider payload. Never normalized, never trimmed.
 	Raw json.RawMessage
+
+	// Ext carries embedder-defined extension data. The library never reads,
+	// writes, or propagates it; applications that construct typed events
+	// themselves stamp app-specific context here for their own handlers.
+	Ext map[string]any
 }
 
 type SessionInfo struct {
