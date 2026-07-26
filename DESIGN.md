@@ -407,6 +407,9 @@ func (d ToolPostDecision) WithContext(s string) ToolPostDecision
 // universal modifiers on all decisions
 func (d T) WithSystemMessage(s string) T // user-facing note where supported
 func (d T) StopAgent(reason string) T    // continue:false where supported
+
+// blocking decisions (ToolPreDecision, PromptDecision)
+func (d T) WithBlockReason(candidates ...string) T // user-facing block message: first non-empty candidate wins
 ```
 
 Important semantics the constructors encode:

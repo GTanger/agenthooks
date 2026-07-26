@@ -96,6 +96,19 @@ type decisionCore struct {
 	hasReplacedOutput bool
 }
 
+// firstNonEmpty picks the first candidate that is not the empty string,
+// reporting whether one was found. It backs the WithBlockReason builders:
+// candidates are ordered fallbacks and only "" is skipped — values are not
+// trimmed, so a whitespace-only candidate wins its slot.
+func firstNonEmpty(candidates []string) (string, bool) {
+	for _, c := range candidates {
+		if c != "" {
+			return c, true
+		}
+	}
+	return "", false
+}
+
 // blocks is the single source of truth for Decision.Blocks: only the kinds
 // whose intent is "the action is prevented" are blocking.
 func (c decisionCore) blocks() bool {
@@ -162,6 +175,21 @@ func (d ToolPreDecision) WithSystemMessage(s string) ToolPreDecision {
 	return d
 }
 
+// WithBlockReason attaches the user-facing message for a blocking decision,
+// chosen as the first non-empty candidate. Callers pass ordered fallbacks —
+// e.g. a policy's custom user-facing message followed by the audit reason the
+// decision was constructed with — and the library picks the one to surface.
+// Candidates are compared verbatim: only the empty string is skipped, so a
+// whitespace-only candidate counts as present. When every candidate is empty
+// the decision is returned unchanged. The chosen message occupies the same
+// channel as WithSystemMessage and is read back with SystemMessage.
+func (d ToolPreDecision) WithBlockReason(candidates ...string) ToolPreDecision {
+	if reason, ok := firstNonEmpty(candidates); ok {
+		d.core.systemMessage = reason
+	}
+	return d
+}
+
 // StopAgent requests continue:false where supported.
 func (d ToolPreDecision) StopAgent(reason string) ToolPreDecision {
 	d.core.stopAgent = true
@@ -210,6 +238,16 @@ func (d PromptDecision) WithContext(s string) PromptDecision {
 
 func (d PromptDecision) WithSystemMessage(s string) PromptDecision {
 	d.core.systemMessage = s
+	return d
+}
+
+// WithBlockReason attaches the user-facing message for a blocking decision,
+// chosen as the first non-empty candidate; see
+// ToolPreDecision.WithBlockReason for the full semantics.
+func (d PromptDecision) WithBlockReason(candidates ...string) PromptDecision {
+	if reason, ok := firstNonEmpty(candidates); ok {
+		d.core.systemMessage = reason
+	}
 	return d
 }
 
