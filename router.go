@@ -110,7 +110,7 @@ func runStages[E any, D decision](ctx context.Context, ev *E, hs []func(context.
 // observeStages runs observe-only handlers in order. Every handler runs;
 // errors are joined. With at least one handler registered the outcome is
 // Observed, preserving the single-handler contract.
-func observeStages[E any](ctx context.Context, ev *E, hs []func(context.Context, *E) error) (Decision, error) {
+func observeStages[E any](ctx context.Context, ev *E, hs []func(context.Context, *E) error) (coreDecision, error) {
 	if len(hs) == 0 {
 		return coreDecision{}, nil
 	}
@@ -183,14 +183,14 @@ type Matcher interface {
 
 // MatchTools matches exact native tool names (case-insensitive). With no
 // arguments it matches every tool (ToolMatcher's empty-matcher semantics).
-func MatchTools(names ...string) Matcher { return ToolMatcher{Names: names} }
+func MatchTools(names ...string) ToolMatcher { return ToolMatcher{Names: names} }
 
 // MatchMCP matches MCP tools by "server/tool" glob: "server" alone means
 // "server/*", and "*" matches any MCP tool.
-func MatchMCP(globs ...string) Matcher { return ToolMatcher{MCP: globs} }
+func MatchMCP(globs ...string) ToolMatcher { return ToolMatcher{MCP: globs} }
 
 // MatchCanonical matches canonical tool classes.
-func MatchCanonical(classes ...CanonicalTool) Matcher { return ToolMatcher{Canonical: classes} }
+func MatchCanonical(classes ...CanonicalTool) ToolMatcher { return ToolMatcher{Canonical: classes} }
 
 // When guards a handler: h runs only when the event carries a tool call the
 // matcher matches; otherwise the stage is neutral. Events without a tool

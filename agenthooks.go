@@ -40,20 +40,20 @@ const maxPayloadBytes = 32 << 20
 // (observe-only) and runs regardless. Typed handlers gate/mutate; OnAny
 // never does. Middleware installed with Use wraps the typed pipeline.
 type Runner struct {
-	policy        PolicyFunc
-	logger        *slog.Logger
-	now           func() time.Time
-	dedupDir      string
-	dedupOff      bool
-	mcpResolveOff bool
-	mcpListOff    bool
-	backfillOff   bool
-  mcpWarmStart       func(string)
+	policy             PolicyFunc
+	logger             *slog.Logger
+	now                func() time.Time
+	dedupDir           string
+	dedupOff           bool
+	mcpResolveOff      bool
+	mcpListOff         bool
+	backfillOff        bool
+	mcpWarmStart       func(string)
 	codexLaunchContext *codexLaunchContext
 	codexMCPWarmStart  func(codexLaunchContext)
-	anyHandlers   []func(context.Context, *Event) error
-	otherByName   map[string][]func(context.Context, *Event) error
-	interceptors  []Interceptor
+	anyHandlers        []func(context.Context, *Event) error
+	otherByName        map[string][]func(context.Context, *Event) error
+	interceptors       []Interceptor
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
