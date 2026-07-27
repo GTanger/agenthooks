@@ -238,6 +238,24 @@ func TestDecodeOpenCodeFrames(t *testing.T) {
 	if stop.FinalMessage != "Deployed to staging." {
 		t.Errorf("shim-spliced finalMessage wrong: %q", stop.FinalMessage)
 	}
+	if stop.Usage == nil {
+		t.Fatal("session.idle should carry shim-spliced usage")
+	}
+	if got := stop.Usage.InputTokens; got == nil || *got != 1200 {
+		t.Errorf("usage input tokens wrong: %v", got)
+	}
+	if got := stop.Usage.OutputTokens; got == nil || *got != 340 {
+		t.Errorf("usage output tokens wrong: %v", got)
+	}
+	if got := stop.Usage.CacheReadTokens; got == nil || *got != 800 {
+		t.Errorf("usage cache read tokens wrong: %v", got)
+	}
+	if got := stop.Usage.CacheWriteTokens; got == nil || *got != 64 {
+		t.Errorf("usage cache write tokens wrong: %v", got)
+	}
+	if got := stop.Usage.Cost; got == nil || *got != 0.0123 {
+		t.Errorf("usage cost wrong: %v", got)
+	}
 
 	typed, err = decodeOpenCodeLine(VariantUnknown, DetectionConfig, testNow, fixture(t, "opencode/message_part_updated_tool_error.json"))
 	if err != nil {

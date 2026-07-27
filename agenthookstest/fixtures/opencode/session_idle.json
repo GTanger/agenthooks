@@ -1,1 +1,1 @@
-{"seq":9,"hook":"session.idle","input":{"sessionID":"oc-sess-1","finalMessage":"Deployed to staging."}}
+{"seq":9,"hook":"session.idle","input":{"sessionID":"oc-sess-1","finalMessage":"Deployed to staging.","usage":{"tokens":{"input":1200,"output":340,"cache":{"read":800,"write":64}},"cost":0.0123}}}
