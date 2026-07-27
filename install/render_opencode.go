@@ -139,6 +139,12 @@ export const AgentHooks = async (ctx: any) => {
               .map((p: any) => p.text)
               .join("\n")
             if (text) input = { ...input, finalMessage: text }
+            // No native hook carries end-of-turn totals either; lift the same
+            // message's info.tokens / info.cost into the stop event.
+            const info: any = m?.info ?? {}
+            if (info.tokens || info.cost != null) {
+              input = { ...input, usage: { tokens: info.tokens, cost: info.cost } }
+            }
             break
           }
         } catch {}

@@ -93,6 +93,20 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 		// which reads the transcript over the OpenCode SDK: no native hook or
 		// bus event carries the completed assistant text.
 		FinalMessage string `json:"finalMessage"`
+		// Usage is spliced into the session.idle input by the shim alongside
+		// FinalMessage, lifted from the last assistant message's info.tokens /
+		// info.cost — no native hook or bus event carries end-of-turn totals.
+		Usage *struct {
+			Tokens *struct {
+				Input  *int `json:"input"`
+				Output *int `json:"output"`
+				Cache  *struct {
+					Read  *int `json:"read"`
+					Write *int `json:"write"`
+				} `json:"cache"`
+			} `json:"tokens"`
+			Cost *float64 `json:"cost"`
+		} `json:"usage"`
 	}
 	_ = json.Unmarshal(fr.Input, &in) // input shape varies per hook; best-effort probe
 	if in.SessionID == "" {
@@ -156,7 +170,17 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 	case KindPromptSubmitted:
 		return &PromptEvent{Event: base, Prompt: opencodePromptText(fr.Output)}, nil
 	case KindStop, KindSubagentStop:
-		return &StopEvent{Event: base, FinalMessage: in.FinalMessage}, nil
+		var usage *Usage
+		if u := in.Usage; u != nil {
+			usage = &Usage{Cost: u.Cost}
+			if t := u.Tokens; t != nil {
+				usage.InputTokens, usage.OutputTokens = t.Input, t.Output
+				if t.Cache != nil {
+					usage.CacheReadTokens, usage.CacheWriteTokens = t.Cache.Read, t.Cache.Write
+				}
+			}
+		}
+		return &StopEvent{Event: base, FinalMessage: in.FinalMessage, Usage: usage}, nil
 	case KindSubagentStart:
 		return &SubagentStartEvent{Event: base}, nil
 	case KindPermission:
