@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func neutralStage(calls *[]string, name string) func(context.Context, *ToolPreEvent) (ToolPreDecision, error) {
@@ -441,6 +442,15 @@ func TestWalkOrderNamesAndPositions(t *testing.T) {
 	check(4, KindToolPre, StageHandler, 1)
 	check(5, KindStop, StageHandler, 0)
 
+	// OnOther stages all report KindOther, so Native carries the native event
+	// name they were registered for; every other stage leaves it empty.
+	if infos[1].Native != "Setup" {
+		t.Errorf("OnOther stage Native = %q, want %q", infos[1].Native, "Setup")
+	}
+	if infos[0].Native != "" || infos[3].Native != "" {
+		t.Errorf("non-OnOther stages must have empty Native: %q, %q", infos[0].Native, infos[3].Native)
+	}
+
 	// Names are the reflected function names: named funcs report as
 	// themselves, anonymous funcs as their closure names.
 	if !strings.Contains(infos[3].Name, "walkToolPreStage") {
@@ -493,5 +503,107 @@ func TestCombinatorsCompose(t *testing.T) {
 	}
 	if d.Kind() != DecisionDeny || d.Reason() != "no shells" {
 		t.Errorf("got kind=%v reason=%q", d.Kind(), d.Reason())
+	}
+}
+
+// A blocking OnAny observer that ignores ctx must not defeat Decide's context
+// deadline: observers run inside the same guard as the typed pipeline.
+func TestDecideHonorsDeadlineAgainstBlockingObserver(t *testing.T) {
+	r := quietRunner()
+	r.OnAny(func(ctx context.Context, e *Event) error {
+		time.Sleep(2 * time.Second) // ignores ctx on purpose
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := r.Decide(ctx, testToolPreEvent(ProviderClaudeCode, "Bash"))
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("deadline not enforced against observer: took %v", elapsed)
+	}
+	if err == nil {
+		t.Fatal("Decide must return the deadline error, got nil")
+	}
+}
+
+// A typed-nil event pointer must be rejected as an invalid event, not
+// dereferenced into a panic by eventOf.
+func TestDecideRejectsTypedNilEvent(t *testing.T) {
+	r := quietRunner()
+	var ev *ToolPreEvent // typed nil
+	d, err := r.Decide(context.Background(), ev)
+	if err == nil {
+		t.Fatal("Decide must reject a typed-nil event with an error")
+	}
+	if d != nil {
+		t.Errorf("rejected event must yield a nil decision, got %v", d)
+	}
+}
+
+// A misbehaving interceptor that returns a nil Decision must be normalized to
+// the neutral zero decision so callers can inspect it without panicking.
+func TestDecideNormalizesNilDecisionFromMiddleware(t *testing.T) {
+	r := quietRunner()
+	r.Use(func(ctx context.Context, typed any, next Next) (Decision, error) {
+		return nil, nil // never calls next; returns a nil decision
+	})
+	d, err := r.Decide(context.Background(), testToolPreEvent(ProviderClaudeCode, "Bash"))
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if d == nil {
+		t.Fatal("nil decision must be normalized to a non-nil neutral decision")
+	}
+	if d.Kind() != DecisionNoDecision {
+		t.Errorf("normalized decision kind = %v, want no-decision", d.Kind())
+	}
+}
+
+// next is at-most-once: a second call returns an error rather than silently
+// re-running the downstream pipeline.
+func TestInterceptorNextAtMostOnce(t *testing.T) {
+	r := quietRunner()
+	handlerCalls := 0
+	var secondErr error
+	r.Use(func(ctx context.Context, typed any, next Next) (Decision, error) {
+		d, err := next(ctx, typed)
+		_, secondErr = next(ctx, typed)
+		return d, err
+	})
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		handlerCalls++
+		return NoDecision(), nil
+	})
+	if _, err := r.Decide(context.Background(), testToolPreEvent(ProviderClaudeCode, "Bash")); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if secondErr == nil {
+		t.Error("second next call must return an error")
+	}
+	if handlerCalls != 1 {
+		t.Errorf("downstream handler ran %d times, want 1", handlerCalls)
+	}
+}
+
+// StopsAgent exposes the StopAgent modifier and its reason on the Decision
+// view returned by Decide.
+func TestStopsAgentAccessor(t *testing.T) {
+	r := quietRunner()
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		return Deny("blocked").StopAgent("halt now"), nil
+	})
+	d, err := r.Decide(context.Background(), testToolPreEvent(ProviderClaudeCode, "Bash"))
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	reason, ok := d.StopsAgent()
+	if !ok || reason != "halt now" {
+		t.Errorf("StopsAgent() = %q, %v; want \"halt now\", true", reason, ok)
+	}
+
+	// A decision without the modifier reports ok=false and an empty reason.
+	if reason, ok := NoDecision().StopsAgent(); ok || reason != "" {
+		t.Errorf("neutral StopsAgent() = %q, %v; want \"\", false", reason, ok)
 	}
 }

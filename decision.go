@@ -79,6 +79,13 @@ type Decision interface {
 	// kind added later will return true here without call-site changes.
 	Blocks() bool
 
+	// StopsAgent reports whether the decision requests the agent stop (the
+	// StopAgent modifier) and, if so, the reason it carries. ok is false for
+	// decisions that did not request a stop, in which case reason is empty.
+	// The modifier changes edge behavior, so Runner.Decide callers need it to
+	// reconstruct the full intent.
+	StopsAgent() (reason string, ok bool)
+
 	decCore() decisionCore
 }
 
@@ -118,6 +125,11 @@ func (c decisionCore) blocks() bool {
 	default:
 		return false
 	}
+}
+
+// stopsAgent is the single source of truth for Decision.StopsAgent.
+func (c decisionCore) stopsAgent() (string, bool) {
+	return c.stopReason, c.stopAgent
 }
 
 func (c decisionCore) withContext(s string) decisionCore {
@@ -212,6 +224,9 @@ func (d ToolPreDecision) Context() []string { return d.core.contextCopy() }
 // Blocks reports whether the decision prevents the gated action.
 func (d ToolPreDecision) Blocks() bool { return d.core.blocks() }
 
+// StopsAgent reports whether StopAgent was requested and the reason.
+func (d ToolPreDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
+
 // UpdatedInput reports the rewritten tool arguments and whether a rewrite
 // was attached with WithUpdatedInput.
 func (d ToolPreDecision) UpdatedInput() (any, bool) {
@@ -272,6 +287,9 @@ func (d PromptDecision) Context() []string { return d.core.contextCopy() }
 // Blocks reports whether the decision prevents the gated action.
 func (d PromptDecision) Blocks() bool { return d.core.blocks() }
 
+// StopsAgent reports whether StopAgent was requested and the reason.
+func (d PromptDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
+
 func (d PromptDecision) decCore() decisionCore { return d.core }
 
 // StopDecision responds to agent.stop / subagent.stop.
@@ -307,6 +325,10 @@ func (d StopDecision) Context() []string { return d.core.contextCopy() }
 
 // Blocks reports whether the decision prevents the gated action.
 func (d StopDecision) Blocks() bool { return d.core.blocks() }
+
+// StopsAgent reports whether StopAgent was requested and the reason. Stop
+// decisions never set the modifier, so ok is always false.
+func (d StopDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
 
 // Instruction reports the ContinueWith payload.
 func (d StopDecision) Instruction() string { return d.core.instruction }
@@ -366,6 +388,9 @@ func (d ToolPostDecision) Context() []string { return d.core.contextCopy() }
 // Blocks reports whether the decision prevents the gated action.
 func (d ToolPostDecision) Blocks() bool { return d.core.blocks() }
 
+// StopsAgent reports whether StopAgent was requested and the reason.
+func (d ToolPostDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
+
 // ReplacedOutput reports the substituted tool output and whether the
 // decision was constructed with ReplaceOutput.
 func (d ToolPostDecision) ReplacedOutput() (any, bool) {
@@ -405,5 +430,9 @@ func (d SessionStartDecision) Context() []string { return d.core.contextCopy() }
 
 // Blocks reports whether the decision prevents the gated action.
 func (d SessionStartDecision) Blocks() bool { return d.core.blocks() }
+
+// StopsAgent reports whether StopAgent was requested and the reason. Session
+// start decisions never set the modifier, so ok is always false.
+func (d SessionStartDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
 
 func (d SessionStartDecision) decCore() decisionCore { return d.core }

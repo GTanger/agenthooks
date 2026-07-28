@@ -127,12 +127,13 @@ func observeStages[E any](ctx context.Context, ev *E, hs []func(context.Context,
 // whose handlers observe rather than decide.
 type coreDecision struct{ core decisionCore }
 
-func (d coreDecision) Kind() DecisionKind    { return d.core.kind }
-func (d coreDecision) Reason() string        { return d.core.reason }
-func (d coreDecision) SystemMessage() string { return d.core.systemMessage }
-func (d coreDecision) Context() []string     { return d.core.contextCopy() }
-func (d coreDecision) Blocks() bool          { return d.core.blocks() }
-func (d coreDecision) decCore() decisionCore { return d.core }
+func (d coreDecision) Kind() DecisionKind         { return d.core.kind }
+func (d coreDecision) Reason() string             { return d.core.reason }
+func (d coreDecision) SystemMessage() string      { return d.core.systemMessage }
+func (d coreDecision) Context() []string          { return d.core.contextCopy() }
+func (d coreDecision) Blocks() bool               { return d.core.blocks() }
+func (d coreDecision) StopsAgent() (string, bool) { return d.core.stopsAgent() }
+func (d coreDecision) decCore() decisionCore      { return d.core }
 
 // Any composes handlers into one handler with the same semantics as stacked
 // registration — one rule everywhere: handlers run in order, the first
@@ -235,7 +236,18 @@ func (r *Runner) runPipeline(ctx context.Context, typed any) (Decision, error) {
 
 func wrapInterceptor(i Interceptor, next Next) Next {
 	return func(ctx context.Context, typed any) (Decision, error) {
-		return i(ctx, typed, next)
+		// Interceptors call next at most once. Enforce it per invocation so a
+		// second call errors instead of silently duplicating downstream
+		// handler side effects.
+		called := false
+		guarded := func(ctx context.Context, typed any) (Decision, error) {
+			if called {
+				return nil, errors.New("agenthooks: interceptor called next more than once")
+			}
+			called = true
+			return next(ctx, typed)
+		}
+		return i(ctx, typed, guarded)
 	}
 }
 
@@ -261,16 +273,33 @@ func coreOfDecision(d Decision) decisionCore {
 // The context deadline is honored even against handlers that ignore ctx; no
 // default deadline is applied.
 func (r *Runner) Decide(ctx context.Context, typed any) (Decision, error) {
-	if eventOf(typed) == nil {
+	if isNilPtr(typed) || eventOf(typed) == nil {
 		return nil, fmt.Errorf("agenthooks: Decide: %T is not an agenthooks event", typed)
 	}
 	ctx = withLogger(ctx, r.logger)
-	r.observe(ctx, typed)
 	d, err := r.decideGuarded(ctx, typed)
 	if err != nil {
 		return nil, err
 	}
+	// A misbehaving interceptor can return a nil Decision; normalize it to
+	// the neutral zero decision so callers can inspect the result without a
+	// nil-interface panic — the same normalization coreOfDecision applies on
+	// the edge path.
+	if d == nil {
+		return coreDecision{}, nil
+	}
 	return d, nil
+}
+
+// isNilPtr reports whether typed is a typed-nil pointer (e.g. a nil
+// (*ToolPreEvent)(nil)). eventOf dereferences recognized event pointers, so
+// this guard keeps the exported Decide from panicking on a typed-nil event.
+func isNilPtr(typed any) bool {
+	if typed == nil {
+		return false
+	}
+	v := reflect.ValueOf(typed)
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
 
 // StageType classifies a stage visited by Walk.
@@ -289,6 +318,11 @@ type StageInfo struct {
 	// for OnOther observers.
 	Kind EventKind
 	Type StageType
+	// Native is the native event name an OnOther observer is registered for.
+	// It is empty for every other stage (OnOther stages all report
+	// Kind == KindOther, so the native name is the only way to tell them
+	// apart in run-order output).
+	Native string
 	// Name is the reflected function name — useful for named funcs and
 	// method values; anonymous closures report their compiler-assigned
 	// closure names.
@@ -319,7 +353,7 @@ func (r *Runner) Walk(fn func(StageInfo) error) error {
 	sort.Strings(names)
 	for _, name := range names {
 		for i, h := range r.otherByName[name] {
-			if err := fn(StageInfo{Kind: KindOther, Type: StageObserver, Name: stageName(h), Pos: i}); err != nil {
+			if err := fn(StageInfo{Kind: KindOther, Native: name, Type: StageObserver, Name: stageName(h), Pos: i}); err != nil {
 				return err
 			}
 		}

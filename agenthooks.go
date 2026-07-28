@@ -438,7 +438,6 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 // winning decision is reduced to its core for the codecs. Decide is the
 // same pipeline without the reduction.
 func (r *Runner) dispatch(ctx context.Context, typed any) (decisionCore, error) {
-	r.observe(ctx, typed)
 	d, err := r.decideGuarded(ctx, typed)
 	if err != nil {
 		return decisionCore{}, err
@@ -462,8 +461,9 @@ func (r *Runner) observe(ctx context.Context, typed any) {
 	}
 }
 
-// decideGuarded runs the middleware chain and typed handlers under the
-// panic/deadline guard.
+// decideGuarded runs the OnAny/OnOther observers, the middleware chain, and
+// the typed handlers under the panic/deadline guard. Observers run inside the
+// guard so a blocking observer that ignores ctx cannot defeat the deadline.
 func (r *Runner) decideGuarded(ctx context.Context, typed any) (Decision, error) {
 	type result struct {
 		d   Decision
@@ -476,6 +476,7 @@ func (r *Runner) decideGuarded(ctx context.Context, typed any) (Decision, error)
 				ch <- result{err: fmt.Errorf("agenthooks: handler panic: %v", p)}
 			}
 		}()
+		r.observe(ctx, typed)
 		d, err := r.runPipeline(ctx, typed)
 		ch <- result{d: d, err: err}
 	}()
