@@ -165,8 +165,8 @@ func TestShipperDeliversBatchThenDeletesFile(t *testing.T) {
 		resAttrs[kv.GetKey()] = anyValueOf(kv.GetValue())
 	}
 	srv.mu.Unlock()
-	if resAttrs["event.origin"] != "agenthooks" {
-		t.Errorf("shipped resource lost event.origin: %v", resAttrs)
+	if resAttrs["gram.event.origin"] != "agenthooks" {
+		t.Errorf("shipped resource lost gram.event.origin: %v", resAttrs)
 	}
 
 	records := srv.allRecords(t)

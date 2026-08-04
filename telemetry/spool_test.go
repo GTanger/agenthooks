@@ -39,8 +39,8 @@ func TestSpoolRoundTrip(t *testing.T) {
 	for _, kv := range res.GetAttributes() {
 		resAttrs[kv.GetKey()] = anyValueOf(kv.GetValue())
 	}
-	if resAttrs["event.origin"] != "agenthooks" {
-		t.Errorf("resource event.origin = %v, want agenthooks", resAttrs["event.origin"])
+	if resAttrs["gram.event.origin"] != "agenthooks" {
+		t.Errorf("resource gram.event.origin = %v, want agenthooks", resAttrs["gram.event.origin"])
 	}
 	if !strings.Contains(string(header.Scope), scopeName) {
 		t.Errorf("header scope = %s, want %s", header.Scope, scopeName)
@@ -79,14 +79,15 @@ func TestSpoolRoundTrip(t *testing.T) {
 		"gram.hook.event":              "PreToolUse",
 		"gram.hook.source":             "claude-code",
 		"event.name":                   "tool.pre",
-		"event.origin":                 "agenthooks",
+		"gram.event.origin":            "agenthooks",
 		"agenthooks.provider":          "claude-code",
 		"agenthooks.variant":           "cli",
 		"session.id":                   "sess-123",
 		"agenthooks.turn.id":           "turn-7",
-		"model":                        "claude-sonnet-4-5",
+		"gen_ai.response.model":        "claude-sonnet-4-5",
 		"gen_ai.tool.call.id":          "toolu_01SsRreQbJuFTsZS9ZszkzNR",
 		"gram.tool.name":               "mcp__github__create_issue",
+		"gen_ai.tool.name":             "mcp__github__create_issue",
 		"agenthooks.tool.canonical":    "mcp",
 		"gram.hook.decision":           "deny",
 		"agenthooks.decision.reason":   "blocked by policy",

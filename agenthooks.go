@@ -30,8 +30,6 @@ import (
 	"log/slog"
 	"os"
 	"time"
-
-	"github.com/speakeasy-api/agenthooks/telemetry"
 )
 
 const maxPayloadBytes = 32 << 20
@@ -58,6 +56,7 @@ type Runner struct {
 	interceptors       []Interceptor
 	afterDecision      afterDecision
 	telemetryShipStart func(io.Reader) error
+	telemetryRunShip   func(io.Reader) error
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
@@ -237,8 +236,14 @@ func Main(r *Runner) {
 		os.Exit(0)
 	}
 	if hasInternalFlag(os.Args[1:], telemetryShipFlag) {
-		if err := telemetry.RunShip(stdin); err != nil {
-			r.logger.Warn("agenthooks: telemetry ship", "error", err)
+		// The ship entry point comes from the recorder WithTelemetry
+		// installed, so binaries that never opt in carry no telemetry code:
+		// without a recorder the flag is a no-op (and no shipper is ever
+		// spawned to reach it).
+		if r.telemetryRunShip != nil {
+			if err := r.telemetryRunShip(stdin); err != nil {
+				r.logger.Warn("agenthooks: telemetry ship", "error", err)
+			}
 		}
 		os.Exit(0)
 	}

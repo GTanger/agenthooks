@@ -179,21 +179,21 @@ columns and existing queries keep working (G3).
 |---|---|---|---|
 | 1 | `source.adapter` (provider slug) | `gram.hook.source` attr → CH materialized `hook_source`; `skill_observations.provider`; `tool_call_blocks.provider` | record attr `gram.hook.source` (same key, emitted at source; Claude surface refinement stays a server-side enrichment, §5.2). Also resource attr `agenthooks.provider` + `agenthooks.variant`. Still on `enforce` for the decision log. |
 | 2 | `source.adapter_version` | (mostly unset) | resource attrs `telemetry.sdk.*`, `service.version`, `agenthooks.version` |
-| 3 | `source.raw_event_name` | `gram.hook.event` attr → CH | record attr `gram.hook.event` (native name, same key) + `event.name` = unified kind (the producer-key convention the URN deriver already reads, `event_urn.go:28-31`) |
+| 3 | `source.raw_event_name` | `gram.hook.event` attr → CH | record attr `gram.hook.event` (native name, same key) + `event.name` = unified kind (the producer-key convention the URN deriver already reads, `event_urn.go:28-31`; dual-emitted with the top-level EventName field — §4.3) |
 | 4 | `source.hostname` | `gram.hook.hostname` attr; Redis session metadata | resource attr `host.name` (OTel semconv); gram maps to `gram.hook.hostname` at ingest |
 | 5 | `source.user_email` | actor resolution → PG messages, `user_email` CH column | record attr `user.email` — the logs handler already resolves and attributes by email (`otel.go:106-116`, `:454-457`); still on `enforce` for attribution of decisions |
 | 6 | `session.id` | `gen_ai.conversation.id` attr → CH `chat_id`; Redis `session:metadata:*`; PG `chats` UUID derivation | record attr `session.id` — deliberately the key the logs pipeline already normalizes into `gen_ai.conversation.id` and reads for session attribution (`normalizeClaudeLogAttributes`, `extractSessionMetadata`); still on `enforce` |
 | 7 | `session.turn_id` | accepted by the API but **not stamped** as a telemetry attribute today | record attr `agenthooks.turn.id`; still on `enforce`, where gram's enforcement log now stamps it too (§5.1). A strict improvement: turn ID becomes first-class. |
 | 8 | `session.cwd` | not written to CH attrs (used transiently) | record attr `agenthooks.session.cwd`, default **off** (privacy); `enforce` keeps it only if policy engines need it |
-| 9 | `session.model` | `gen_ai.response.model` attr | record attr `model` (normalized to `gen_ai.response.model` by the existing pipeline) or `gen_ai.response.model` directly |
+| 9 | `session.model` | `gen_ai.response.model` attr | record attr `gen_ai.response.model` directly — the current semconv key and the one gram's pipeline already stores; the flat `model` spelling is Claude-dialect input to `normalizeClaudeLogAttributes`, not something this rail emits |
 | 10 | `event.type` + `occurred_at` | dispatch + `time_unix_nano` | log record `Timestamp` = event receive time, `ObservedTimestamp` = spool time; record attr `agenthooks.hook.duration_ms` = dispatch-to-response duration (timing today's point events never had; namespaced under `.hook.` to keep it distinct from tool-execution duration — §4.9) |
 | 11 | `data.prompt.text` | risk-scan input; PG `chat_messages` (user role) | **`enforce`** (it is the decision input). Record carries `agenthooks.prompt.length` + `agenthooks.prompt.sha256` by default; full text only at `capture` level |
-| 12 | `data.tool_call.id/name` | `gen_ai.tool.call.id`, `gram.tool.name` attrs; PG tool messages | record attrs `gen_ai.tool.call.id`, `gram.tool.name` (same keys), `agenthooks.tool.canonical`, `agenthooks.tool.synthesized`; `enforce` keeps id+name+input for gating events |
+| 12 | `data.tool_call.id/name` | `gen_ai.tool.call.id`, `gram.tool.name` attrs; PG tool messages | record attrs `gen_ai.tool.call.id`, `gram.tool.name` (same keys) plus the semconv twin `gen_ai.tool.name`, `agenthooks.tool.canonical`, `agenthooks.tool.synthesized`; `enforce` keeps id+name+input for gating events |
 | 13 | `data.tool_call.input` | `gen_ai.tool.call.arguments` attr; risk-scan input; PG | **`enforce`** for tool.pre/permission (decision input). Record: size + hash by default; `gen_ai.tool.call.arguments` at `capture` level |
-| 14 | `data.tool_call.output` / `error` / `is_interrupt` / `duration_ms` / `status` | `gen_ai.tool.call.result`, `gram.hook.error`, `gram.hook.is_interrupt` attrs; PG tool result messages | record attrs on the tool.post/tool.error record: `gram.hook.error`, `gram.hook.is_interrupt` (same keys), `agenthooks.tool.duration_ms`; severity WARN/ERROR on failure (§4.3); `gen_ai.tool.call.result` at `capture` level. **Not sent to enforcement at all** (tool.post stops being POSTed). |
+| 14 | `data.tool_call.output` / `error` / `is_interrupt` / `duration_ms` / `status` | `gen_ai.tool.call.result`, `gram.hook.error`, `gram.hook.is_interrupt` attrs; PG tool result messages | record attrs on the tool.post/tool.error record: `gram.hook.error` (same key) with the stable-semconv twin `error.type` (`tool_error`), `agenthooks.tool.duration_ms`; severity ERROR on failure (§4.3); `gen_ai.tool.call.result` at `capture` level. `is_interrupt` has no agenthooks event-model equivalent today, so no record attribute carries it (gram keeps deriving `gram.hook.is_interrupt` for rails that supply it). **Not sent to enforcement at all** (tool.post stops being POSTed). |
 | 15 | `data.mcp.*` (server_name, server_identity, url, command, result_json) | `gram.mcp.match`, `gram.mcp.server_url`, `gram.tool_call.source` attrs; shadow-MCP evidence | record attrs `gram.mcp.match`, `gram.mcp.server_url` (same keys, transport redacted exactly like `gram/hooks/relay/redact.go`) + `agenthooks.mcp.server/tool/from_config`; **`enforce`** keeps url/command/identity for shadow-MCP gating |
 | 16 | `data.mcp_inventory[]` | CH `shadow_mcp_inventory_urls` (schema.sql:285-297) | **`enforce`** — inventory is shadow-MCP *enforcement evidence*, not just observability. Additionally mirrored (redacted) as attributes on the session.start record for self-contained telemetry. |
-| 17 | `data.usage.*` (tokens, cost, loop_count, status) | `gen_ai.usage.*` attrs; usage-metric rows (Cursor) | record attrs `gen_ai.usage.input_tokens`, `.output_tokens`, cache/cost extensions (same keys) on the stop record. Gram keeps synthesizing its usage-metric rows (`agent_hook:metric:usage`) from these attrs server-side, or the library emits a second usage record — open question O5. Not sent to enforcement. |
+| 17 | `data.usage.*` (tokens, cost, loop_count, status) | `gen_ai.usage.*` attrs; usage-metric rows (Cursor) | record attrs `gen_ai.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_creation.input_tokens` (semconv-exact, matching gram's keys) and `gen_ai.usage.cost` (gram extension, no semconv equivalent) on the stop record. Gram keeps synthesizing its usage-metric rows (`agent_hook:metric:usage`) from these attrs server-side, or the library emits a second usage record — open question O5. Not sent to enforcement. |
 | 18 | `data.message` (assistant text, role, duration) | PG `chat_messages` (assistant role) | record body carries the text at `capture` level (`gram.log.body` is the established body destination); `agenthooks.message.length` otherwise. Not sent to enforcement. |
 | 19 | `data.skill.*` | PG `skill_observations` + Skill telemetry row; content-upload side channel | record attrs `agenthooks.skill.name/source/...`; **but** the skill-capture product pipeline (content-required effects → `uploadSkillContent`) stays on the ingest rail for now (open question O6) |
 | 20 | `data.notification` | light hook-event log row | its own log record with `agenthooks.notification.type/message` |
@@ -221,7 +221,20 @@ plus one runner option in the root package:
 
 ```go
 // package agenthooks
-func WithTelemetry(t *telemetry.Recorder) Option
+//
+// TelemetryRecorder is the runner-facing surface of a telemetry recorder;
+// *telemetry.Recorder implements it. Defined in the root package so the root
+// package never imports telemetry: only binaries that construct a recorder
+// link the OTel SDK dependency tree. Its methods take an internal type
+// (internal/hookrecord.Record), so external implementations are not
+// possible — the interface is a linkage boundary, not an extension point.
+type TelemetryRecorder interface {
+	RecordHook(hr *hookrecord.Record) error
+	MaybeSpawnShipper(spawn func(stdin io.Reader) error)
+	RunShip(stdin io.Reader) error // detached-shipper entry, dispatched by Main
+}
+
+func WithTelemetry(rec TelemetryRecorder) Option
 
 // package telemetry
 type Config struct {
@@ -232,7 +245,7 @@ type Config struct {
 	Headers map[string]string
 	// Resource attributes merged over the library defaults
 	// (service.name/version, host.name, os.type, agenthooks.provider,
-	// event.origin=agenthooks, ...).
+	// gram.event.origin=agenthooks, ...).
 	Resource map[string]string
 
 	// SpoolDir overrides the spool location. Default:
@@ -296,7 +309,15 @@ Rationale:
   linker only includes imported packages), and with module-graph pruning,
   downstream modules that don't import the package don't vendor or verify
   the SDK's own dependencies — the cost to non-users is go.mod noise, not
-  binary size or supply-chain surface. **Recommendation:** keep
+  binary size or supply-chain surface. To make that guarantee structural,
+  `WithTelemetry` takes the root-package `TelemetryRecorder` interface
+  (above) rather than `*telemetry.Recorder`: the **root package itself has
+  no telemetry import** (`go list -deps` on the root package shows zero
+  OTel packages), so nothing links the SDK until the consumer's own import
+  of `telemetry` does. The detached-shipper dispatch in `Main` rides the
+  same boundary — the ship flag calls the recorder's `RunShip` method when
+  one was installed and no-ops otherwise (a binary without a recorder never
+  spawns a shipper in the first place). **Recommendation:** keep
   `telemetry` in the main module for v1 (a nested `telemetry/go.mod`
   submodule would keep the root `go.mod` pristine but adds multi-module
   versioning/tagging friction that isn't warranted yet; revisit if
@@ -355,43 +376,60 @@ Record anatomy:
 - **TraceId / SpanId** (native OTLP log fields) — §4.4. The logs handler
   already lifts these onto the `trace.id`/`span.id` attributes
   (`otel.go:442-447`).
-- **EventName / `event.name` attribute** = unified kind
-  (`tool.pre`, `agent.stop`, ...) — the producer-key convention gram's URN
-  deriver already consumes (`event_urn.go:28-31`).
+- **EventName (top-level field) *and* `event.name` attribute** = unified
+  kind (`tool.pre`, `agent.stop`, ...), deliberately **dual-emitted**.
+  Current OTel conventions moved the event name from the `event.name`
+  attribute (now deprecated) to the top-level `EventName` LogRecord field,
+  and the SDK/`otlploghttp` emit it there — but gram's OTLP/JSON ingest
+  schema has no `eventName` field (`otel_types.go:41-47`; goa drops unknown
+  fields) and its URN deriver reads only the *attribute*
+  (`event_urn.go:28-31`). So the recorder sets both: the field for semconv
+  correctness and generic collectors, the attribute for gram's pipeline.
+  (Gram's protobuf decode branch, §5.2 item 4, should also lift proto
+  `event_name` into the attribute for future SDK-only producers.)
 - **Attributes** (default capture level) — keys chosen to **reconcile with
-  what gram derives today** (§3), i.e. the record arrives pre-normalized:
+  what gram derives today** (§3), i.e. the record arrives pre-normalized.
+  `gen_ai.*` keys follow the current registry, which lives in the
+  [semantic-conventions-genai repo](https://github.com/open-telemetry/semantic-conventions-genai)
+  (all Development stability):
 
   | Attribute | Source | Existing gram key? |
   |---|---|---|
   | `gram.hook.event` | `Event.NativeName` | yes (conventions.go:340) |
   | `gram.hook.source` | `Event.Provider` (+ variant refinement) | yes (conventions.go:343, CH mat column) |
-  | `event.name` | `Event.Kind` | producer convention read by URN deriver |
-  | `event.origin` | fixed `"agenthooks"` | new; the plugin-rail origin marker (see below) |
+  | `event.name` | `Event.Kind` | producer convention read by URN deriver (dual-emitted with the EventName field, above) |
+  | `gram.event.origin` | fixed `"agenthooks"` | new; the plugin-rail origin marker (see below) |
   | `session.id` | `Session.ID` | normalized → `gen_ai.conversation.id` by `normalizeClaudeLogAttributes` (otel.go:551-553) |
-  | `agenthooks.turn.id` | `Session.TurnID` | new (turn ID is dropped today — §3 row 7) |
-  | `model` | `Session.Model` | normalized → `gen_ai.response.model` (otel.go:554-556) |
-  | `gen_ai.tool.call.id`, `gram.tool.name` | `ToolCall` | yes. The id value is the provider's native tool-call id — on Claude this is the same `tool_use_id` its native OTEL events carry ("matches the `tool_use_id` passed to hooks", per Claude's monitoring docs), making it the cross-rail join key (§4.9) |
+  | `agenthooks.turn.id` | `Session.TurnID` | new (turn ID is dropped today — §3 row 7; no semconv turn concept exists) |
+  | `gen_ai.response.model` | `Session.Model` | yes — the current semconv key gram's pipeline already normalizes Claude's flat `model` into (otel.go:554-556); emitted directly, no flat `model` dialect key |
+  | `gen_ai.tool.call.id`, `gram.tool.name`, `gen_ai.tool.name` | `ToolCall` | id + gram name: yes. `gen_ai.tool.name` is the semconv twin carried alongside the gram-dialect key for collector/vendor interop. The id value is the provider's native tool-call id — on Claude this is the same `tool_use_id` its native OTEL events carry ("matches the `tool_use_id` passed to hooks", per Claude's monitoring docs), making it the cross-rail join key (§4.9) |
   | `agenthooks.tool.canonical`, `.synthesized` | `ToolCall` | new |
   | `agenthooks.tool.duration_ms` | `ToolPostEvent` duration | new (§3 row 14); agent-side counterpart of the Claude-native `tool_result.duration_ms` |
-  | `gram.mcp.match`, `gram.mcp.server_url` | `MCPCall` (redacted) | yes (conventions.go:377-387) |
+  | `gram.mcp.match`, `gram.mcp.server_url`, `agenthooks.mcp.*` | `MCPCall` (redacted) | gram keys: yes (conventions.go:377-387). Note the `mcp.*` namespace is now reserved by the MCP semconv — this library never mints `mcp.*` keys |
   | `gram.hook.decision`, `agenthooks.decision.reason/.blocking/.source` | final `decisionCore` | `gram.hook.decision` exists (conventions.go:339, metrics-only today — now on the event record) |
-  | `gram.hook.error`, `gram.hook.is_interrupt` | `ToolPostEvent` | yes (conventions.go:341-342) |
-  | `gen_ai.usage.*`, `gen_ai.usage.cost`, `agenthooks.loop_count` | `StopEvent.Usage` / `LoopCount` | yes (gen_ai semconv) |
+  | `gram.hook.error`, `agenthooks.handler.error`, `error.type` | `ToolPostEvent` / handler failure | `gram.hook.error`: yes (conventions.go:341). `error.type` is the stable-semconv twin, set only for genuine failures with documented low-cardinality values (`tool_error`, `handler_error`) — never for policy denies, which are successful enforcement |
+  | `gen_ai.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_creation.input_tokens`, `gen_ai.usage.cost`, `agenthooks.loop_count` | `StopEvent.Usage` / `LoopCount` | yes. Token keys match the current semconv registry exactly (which gram's `conventions.go:439-440` already mirrors); `gen_ai.usage.cost` is a gram extension with no semconv equivalent, kept for pipeline compat. If reasoning tokens are ever carried, the semconv key is `gen_ai.usage.reasoning.output_tokens` — not gram's legacy `gen_ai.usage.reasoning_tokens`, which gram should map at ingest |
   | `agenthooks.prompt.length`, `.prompt.sha256` | `PromptEvent` | new (text itself only at `CaptureContent`) |
   | `agenthooks.hook.duration_ms` | dispatch timing (receive → response encoded) | new. **Changed** from `agenthooks.duration_ms`: namespaced under `.hook.` so it cannot be confused with Claude's flat `duration_ms`, which measures tool execution, not hook overhead (§4.9) |
   | `agenthooks.event.backfilled` | `Event.Backfilled` | new |
-  | `agenthooks.subagent.id/type` | `AgentInfo` when present | new |
+  | `agenthooks.subagent.id/type`, `gen_ai.agent.name` | `AgentInfo` when present | new. `gen_ai.agent.name` carries the subagent type as its semconv twin (the registry's "human-readable name of the agent"); the per-invocation subagent *id* stays custom — `gen_ai.agent.id` means a stable hosted-agent resource, which this is not |
   | `user.email` | consumer-supplied (resolver hook) | read by logs attribution (otel.go:454) |
 
 - **Resource attributes** — `service.name` (consumer binary),
   `service.version`, `host.name`, `os.type`, `host.arch`,
   `agenthooks.provider`, `agenthooks.variant`, `agenthooks.harness.*`, and
-  `event.origin=agenthooks` (also stamped per-record for readers that only
-  see flattened attributes).
+  `gram.event.origin=agenthooks` (also stamped per-record for readers that
+  only see flattened attributes).
 
-**`event.origin`.** Every record carries `event.origin = "agenthooks"`,
-matching the established taxonomy from prior design discussions (`gram`,
-`claude`, `codex`, `copilot`, `agenthooks`). Gram's persisted classifier is
+**`gram.event.origin`.** Every record carries
+`gram.event.origin = "agenthooks"`, matching the established taxonomy from
+prior design discussions (`gram`, `claude`, `codex`, `copilot`,
+`agenthooks`). The key lives in gram's dialect namespace — alongside the
+existing `gram.event.source` — rather than the bare `event.` namespace an
+earlier draft used: `event.` is an existing OTel semconv namespace (its one
+member, `event.name`, is deprecated), and the naming guidelines recommend
+against minting custom attributes inside semconv namespaces, where a future
+`event.origin` definition would collide. Gram's persisted classifier is
 coarser — `urn:telemetry:<origin>:<kind>:<type>` with origins
 `provider_otel | provider_api | agent_hook | gram_service | unknown`
 (`gram/server/internal/urn/telemetry_event.go:10-42`, which deliberately
@@ -399,8 +437,8 @@ keeps producer identity in attributes like `gram.hook.source`). Agent-emitted
 records classify as **`agent_hook` / `kind=log`** — the same origin and kind
 as today's derived hook rows (`deriveHookEventURN`, `event_urn.go:91-93`),
 which is exactly what makes downstream readers indifferent to the cutover;
-`event.origin=agenthooks` + resource attrs distinguish emitted from derived
-rows during the dual-emit window (§6).
+`gram.event.origin=agenthooks` + resource attrs distinguish emitted from
+derived rows during the dual-emit window (§6).
 
 ### 4.4 Deterministic trace-context identity — matching gram's derivation exactly
 
@@ -498,7 +536,7 @@ simplified because records are append-friendly:
   NDJSON — a torn last line is detected and skipped by the shipper.
 - **Caps (write-time enforced, lock-free like `trimSpool`):** max age 14 d,
   max total 64 MiB, max single record 1 MiB (content-capture payloads
-  truncated with `agenthooks.truncated=true`). When the spool is full or
+  truncated with `agenthooks.record.truncated=true`). When the spool is full or
   unwritable, the record is **dropped and counted** (`agenthooks-async.log`
   gets a warning) — never an error to the pipeline.
 
@@ -617,7 +655,7 @@ event beyond storing it (everything is stored).
 |---|---|---|---|
 | `user_prompt` (`prompt_length`; `prompt` text only with `OTEL_LOG_USER_PROMPTS=1`) | stored + schedules the prompt-correlation workflow (`otel.go:511-532`) | `prompt.submitted` (`agenthooks.prompt.length/.sha256`; text at `CaptureContent`) | both see the prompt; join on `session.id`. Content gating differs: Claude's is a per-device env flag, agenthooks' an org-distributed capture level (§4.6) |
 | `assistant_response` (`response`, `model`, `request_id`, `message.uuid`) | stored; no feature consumer | `agent.stop` message capture (§3 row 18) | Claude adds `message.uuid` (transcript join) and per-response `request_id`; agenthooks sees final text only where the provider exposes it |
-| `tool_result` (`tool_name`, `tool_use_id`, `success`, `duration_ms`, sizes, `decision_source`) | stored | `tool.post` / `tool.error` | strongest overlap. Join: `tool_use_id` = `gen_ai.tool.call.id` (same underlying id, per Claude's docs). Claude adds I/O sizes + decision provenance; agenthooks adds `gram.mcp.*` resolution, `is_interrupt`, and output content under org-controlled capture |
+| `tool_result` (`tool_name`, `tool_use_id`, `success`, `duration_ms`, sizes, `decision_source`) | stored | `tool.post` / `tool.error` | strongest overlap. Join: `tool_use_id` = `gen_ai.tool.call.id` (same underlying id, per Claude's docs). Claude adds I/O sizes + decision provenance; agenthooks adds `gram.mcp.*` resolution, `error.type` failure classing, and output content under org-controlled capture |
 | `tool_decision` (`decision` accept/reject, `source` config/hook/user_*) | stored | decision attrs on `tool.pre` (+ gram's enforcement log, §5.1) | the near-duplicate case — see dual-rail note below. Claude's `source` taxonomy covers config/user decisions that never reach a hook; agenthooks carries the reason/policy detail Claude flattens to accept/reject |
 | `api_request`, `api_error`, `api_refusal`, `api_retries_exhausted`, `api_{request,response}_body` | stored; `api_request` feeds identity extraction (`otel.go:320-343`) and MCP-attribution staging when redacted (`otel.go:503-509`); cost/token **metrics** feed usage rollups (`pending_helpers.go:535-547`) | **none** — hooks never see API internals | Claude-only: per-request cost, tokens, cache, model, request ids, errors/refusals. agenthooks' `gen_ai.usage.*` on `agent.stop` is turn-grained and provider-dependent — a different measurement, not a substitute |
 | `mcp_server_connection` (`status`, `transport_type`; `server_name` only with `OTEL_LOG_TOOL_DETAILS=1`) | stored | `session.start` MCP inventory + per-call `gram.mcp.*` | complementary angles: Claude sees connection lifecycle; agenthooks resolves server identity/URL/command per call (shadow-MCP evidence), unredacted by default |
@@ -668,10 +706,10 @@ materialized column for both rails (§5.2).
 - Separation is already structural: Claude rows classify
   `provider_otel:log:*` (writer URN `claude-code:otel:logs`), agenthooks
   rows `agent_hook:log:*` (§5.2), and the URN is materialized for
-  filtering. Note `event.origin=agenthooks` marks only the agenthooks rows
-  — Claude's CLI emits no such attribute — so **readers should scope on the
-  URN origin**, with `event.origin` as the finer producer marker within
-  `agent_hook`.
+  filtering. Note `gram.event.origin=agenthooks` marks only the agenthooks
+  rows — Claude's CLI emits no such attribute — so **readers should scope on
+  the URN origin**, with `gram.event.origin` as the finer producer marker
+  within `agent_hook`.
 - The rails are complementary, not duplicates: per the matrix, only
   `tool_result`/`tool.post` and `tool_decision`/`tool.pre` overlap
   semantically, and their attribute sets differ enough that dedup would be
@@ -773,12 +811,17 @@ that derivation in the cutover.
    `application/x-protobuf` for the OTLP paths, `proto.Unmarshal` into
    `go.opentelemetry.io/proto/otlp` `ExportLogsServiceRequest`, then
    **protojson-transcode to canonical OTLP/JSON** and hand it to the
-   existing stock JSON decoder. The entire downstream pipeline is
-   untouched — the decode tests already guard exactly the canonical shape
-   protojson produces (`otel_decode_test.go`: collector-style stringified
-   ints), and `google.golang.org/protobuf` is already in the server
-   module. Small, contained, and independently useful (any standard OTLP
-   client can then target the endpoint).
+   existing stock JSON decoder. One enrichment while transcoding: **lift
+   the proto `event_name` field into an `event.name` attribute** when the
+   attribute is absent — gram's JSON schema has no `eventName` field and
+   the URN deriver reads the attribute, so this future-proofs the endpoint
+   for standard SDK producers that only set the top-level field (this
+   library dual-emits both, §4.3, so it works either way). The rest of the
+   downstream pipeline is untouched — the decode tests already guard
+   exactly the canonical shape protojson produces (`otel_decode_test.go`:
+   collector-style stringified ints), and `google.golang.org/protobuf` is
+   already in the server module. Small, contained, and independently
+   useful (any standard OTLP client can then target the endpoint).
 5. **(Optional, one line) Cross-rail tool-call join.** Extend
    `normalizeClaudeLogAttributes` (`otel.go:550-563`) to also map Claude's
    `tool_use_id` → `gen_ai.tool.call.id`, so the Claude-native and
@@ -877,8 +920,8 @@ derivation**.
    `hooksBinaryVersion` in `server/internal/plugins/hooks_bootstrap.go` so
    org plugins roll forward. **Both** streams now flow into
    `telemetry_logs`: request-derived rows (URN `agent_hook:log:*`, no
-   `event.origin`) and agent-emitted rows (same URN class,
-   `event.origin=agenthooks`).
+   `gram.event.origin`) and agent-emitted rows (same URN class,
+   `gram.event.origin=agenthooks`).
 5. **Parity verification** (the compatibility window's exit criterion):
    same-table diffs joined on `(trace_id, event.name / gram.hook.event,
    gen_ai.conversation.id)` — possible precisely because the agent side
@@ -888,7 +931,7 @@ derivation**.
 **Phase 3 — gram readers switch**
 6. ClickHouse readers mostly need nothing (same table/keys); audit queries
    that would double-count during dual-emit and scope them by
-   `event.origin` where needed. Stand up the span-free replacements for the
+   `gram.event.origin` where needed. Stand up the span-free replacements for the
    Postgres products (session capture / usage rollups fed from the emitted
    stream, per §5.2 item 6, if approved under O1). Request-derived rows are
    marked deprecated to catch stragglers.
@@ -929,7 +972,7 @@ switched).
 - **O2 — Record volume & dual-emit scoping.** One emitted record per hook
   event is roughly today's derived-row volume, but the dual-emit window
   doubles hook-row volume in `telemetry_logs`, and both streams share the
-  URN class `agent_hook:log:*` by design. Is `event.origin` scoping enough
+  URN class `agent_hook:log:*` by design. Is `gram.event.origin` scoping enough
   for every reader during the window (metrics MVs aggregate without origin
   filters today), or do some MVs need a temporary filter / do we sample the
   emitted stream until Phase 4?

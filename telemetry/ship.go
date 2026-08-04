@@ -59,9 +59,10 @@ type shipConfig struct {
 }
 
 // RunShip reads the ship config from stdin and drains the spool once. It is
-// invoked by agenthooks.Main when the internal ship flag is present;
-// consumer binaries can also call it to implement an explicit
-// "telemetry ship" subcommand fed by MaybeSpawnShipper's payload shape.
+// invoked (through the Recorder method of the same name) by agenthooks.Main
+// when the internal ship flag is present; consumer binaries can also call it
+// to implement an explicit "telemetry ship" subcommand fed by
+// MaybeSpawnShipper's payload shape.
 func RunShip(stdin io.Reader) error {
 	rd := bufio.NewReaderSize(io.LimitReader(stdin, maxRecordBytes), 64<<10)
 	line, err := rd.ReadBytes('\n')
@@ -288,5 +289,5 @@ func replayRecord(pr *lpb.LogRecord, now time.Time) (log.Record, trace.SpanConte
 // resourceFromProtoFallback is the resource used when a header's resource
 // payload cannot be decoded: identity-free but keeps records flowing.
 func resourceFromProtoFallback() *resource.Resource {
-	return resource.NewSchemaless(attribute.String("event.origin", "agenthooks"))
+	return resource.NewSchemaless(attribute.String("gram.event.origin", "agenthooks"))
 }

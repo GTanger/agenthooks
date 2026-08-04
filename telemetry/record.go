@@ -13,7 +13,7 @@ import (
 
 // maxContentBytes bounds each captured content value (prompt text, tool IO,
 // assistant message). Longer values are truncated and the record flagged
-// agenthooks.truncated=true, keeping single records under the spool's
+// agenthooks.record.truncated=true, keeping single records under the spool's
 // per-record cap.
 const maxContentBytes = 256 << 10
 
@@ -30,22 +30,29 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	rec.SetSeverity(severityOf(hr))
 	rec.SetSeverityText(severityText(severityOf(hr)))
 
-	// Identity and classification.
+	// Identity and classification. The event name is deliberately emitted
+	// twice: as the top-level EventName field (current OTel semconv — the
+	// event.name attribute is deprecated in its favor) and as the
+	// event.name attribute, because gram's OTLP/JSON ingest schema has no
+	// eventName field and its URN deriver reads only the attribute.
 	b.str("gram.hook.event", hr.NativeName)
 	b.str("gram.hook.source", hr.Provider)
 	b.str("event.name", hr.Kind)
-	b.str("event.origin", "agenthooks")
+	b.str("gram.event.origin", "agenthooks")
 	b.str("agenthooks.provider", hr.Provider)
 	b.str("agenthooks.variant", hr.Variant)
 	b.str("session.id", hr.SessionID)
 	b.str("agenthooks.turn.id", hr.TurnID)
-	b.str("model", hr.Model)
+	b.str("gen_ai.response.model", hr.Model)
 	b.str("user.email", hr.UserEmail)
 	if hr.Backfilled {
 		b.bool("agenthooks.event.backfilled", true)
 	}
 	b.str("agenthooks.subagent.id", hr.SubagentID)
 	b.str("agenthooks.subagent.type", hr.SubagentType)
+	// Semconv twin: gen_ai.agent.name is the standard home for a
+	// human-readable agent name; the subagent type is the closest fit.
+	b.str("gen_ai.agent.name", hr.SubagentType)
 	b.float("agenthooks.hook.duration_ms", hr.HookDurationMS)
 
 	// The final decision as the agent saw and applied it, post
@@ -55,10 +62,17 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	b.bool("agenthooks.decision.blocking", hr.Decision.Blocking)
 	b.str("agenthooks.decision.source", hr.Decision.Source)
 	b.str("agenthooks.handler.error", hr.HandlerErr)
+	// error.type (stable semconv) classifies genuine failures with a
+	// documented low-cardinality value; policy denies are successful
+	// enforcement, not errors, and do not set it.
+	b.str("error.type", errorType(hr))
 
 	if t := hr.Tool; t != nil {
 		b.str("gen_ai.tool.call.id", t.ID)
 		b.str("gram.tool.name", t.Name)
+		// Semconv twin of the gram-dialect key, for collector/vendor
+		// interop.
+		b.str("gen_ai.tool.name", t.Name)
 		b.str("agenthooks.tool.canonical", t.Canonical)
 		if t.Synthesized {
 			b.bool("agenthooks.tool.synthesized", true)
@@ -151,7 +165,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 		b.bool("agenthooks.session.unidentified", true)
 	}
 	if b.truncated {
-		b.bool("agenthooks.truncated", true)
+		b.bool("agenthooks.record.truncated", true)
 	}
 	rec.AddAttributes(b.attrs...)
 
@@ -198,6 +212,20 @@ func severityOf(hr *hookrecord.Record) log.Severity {
 		return log.SeverityWarn
 	}
 	return log.SeverityInfo
+}
+
+// errorType maps genuine failures onto the stable error.type semconv
+// attribute. Values are low-cardinality and documented here: "handler_error"
+// when the handler pipeline failed, "tool_error" when the tool execution the
+// event reports failed. Empty (attribute omitted) otherwise.
+func errorType(hr *hookrecord.Record) string {
+	switch {
+	case hr.HandlerErr != "":
+		return "handler_error"
+	case hr.Tool != nil && hr.Tool.Failed:
+		return "tool_error"
+	}
+	return ""
 }
 
 func severityText(s log.Severity) string {

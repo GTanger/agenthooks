@@ -70,7 +70,7 @@ type Config struct {
 	Headers map[string]string
 	// Resource attributes merged over the library defaults (service.name,
 	// service.version, host.name, os.type, host.arch,
-	// event.origin=agenthooks, ...).
+	// gram.event.origin=agenthooks, ...).
 	Resource map[string]string
 
 	// SpoolDir overrides the spool location. Default:
@@ -170,6 +170,16 @@ func (r *Recorder) RecordHook(hr *hookrecord.Record) error {
 	return r.spool.takeErr()
 }
 
+// RunShip drains the spool once, reading the ship config from stdin. It is
+// the method form of the package-level RunShip, present so *Recorder
+// satisfies agenthooks.TelemetryRecorder and the root package needs no
+// import of this package. It ignores the receiver's config on purpose: the
+// detached shipper's config arrives over stdin from whichever process
+// spawned it.
+func (r *Recorder) RunShip(stdin io.Reader) error {
+	return RunShip(stdin)
+}
+
 // MaybeSpawnShipper starts a detached shipper run when spooled records exist
 // and the debounce window allows, handing it the spool location and endpoint
 // config as a single-line JSON stdin payload so credentials never appear in
@@ -245,7 +255,7 @@ func buildResource(extra map[string]string) (*resource.Resource, error) {
 		attribute.String("service.name", serviceName()),
 		attribute.String("os.type", runtime.GOOS),
 		attribute.String("host.arch", runtime.GOARCH),
-		attribute.String("event.origin", "agenthooks"),
+		attribute.String("gram.event.origin", "agenthooks"),
 		attribute.String("agenthooks.version", agenthooksVersion()),
 	}
 	if host, err := os.Hostname(); err == nil && host != "" {

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
-	"github.com/speakeasy-api/agenthooks/telemetry"
 )
 
 // telemetryShipFlag re-execs this binary as the detached telemetry shipper,
@@ -32,20 +31,43 @@ type recordTiming struct {
 // reporting-only events). WithTelemetry installs one.
 type afterDecision func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string)
 
+// TelemetryRecorder is the runner-facing surface of a telemetry recorder;
+// *telemetry.Recorder implements it. It exists so this root package does not
+// import the telemetry package: only binaries that construct a recorder (and
+// therefore import telemetry themselves) link the OTel SDK dependency tree —
+// consumers that never opt in pay nothing. The method signatures use an
+// internal type on purpose, which keeps the recorder tap callable by the
+// runner but not implementable or invokable by external consumers.
+type TelemetryRecorder interface {
+	// RecordHook captures one post-decision hook event into the local spool.
+	RecordHook(hr *hookrecord.Record) error
+	// MaybeSpawnShipper starts a detached shipper run when spooled records
+	// exist and the debounce window allows; spawn re-execs the binary.
+	MaybeSpawnShipper(spawn func(stdin io.Reader) error)
+	// RunShip drains the spool once, reading the ship config from stdin. It
+	// runs inside the detached shipper process Main dispatches.
+	RunShip(stdin io.Reader) error
+}
+
 // WithTelemetry installs rec as the runner's telemetry recorder: one OTel
 // log record per hook event, appended to the local disk spool after the
 // decision is on the wire and shipped asynchronously by a detached process.
 // Opt-in and fail-open by construction — without the option nothing changes;
 // with it, a recorder failure degrades to a logged warning, never an error
-// on the pipeline. See the telemetry package for configuration.
+// on the pipeline. See the telemetry package for configuration:
+//
+//	rec, err := telemetry.New(telemetry.Config{Endpoint: ...})
+//	if err != nil { ... }
+//	r := agenthooks.New(agenthooks.WithTelemetry(rec))
 //
 // Runner.Decide does not record telemetry: it has no wire edge and its
 // callers own their own observability.
-func WithTelemetry(rec *telemetry.Recorder) Option {
+func WithTelemetry(rec TelemetryRecorder) Option {
 	return func(r *Runner) {
 		if rec == nil {
 			return
 		}
+		r.telemetryRunShip = rec.RunShip
 		r.afterDecision = func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) {
 			if err := rec.RecordHook(buildHookRecord(typed, base, core, timing, herr, source)); err != nil {
 				r.logger.Warn("agenthooks: telemetry record failed", "error", err)
