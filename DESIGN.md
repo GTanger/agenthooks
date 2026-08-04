@@ -76,7 +76,9 @@ Secondary findings that shape the design (full quirk registry in §9):
 
 Non-goals for v1 (§11): auth/login flows, HTTP transport to a decision server,
 transcript capture pipelines. These are consumer concerns layered *on top of*
-this library, not inside it.
+this library, not inside it. (Observability is the exception: the opt-in
+`telemetry` package emits one OTel log record per hook event, spooled locally
+and shipped off the critical path — see §11.)
 
 ---
 
@@ -692,12 +694,21 @@ in CI without the actual agents.
 
 - **Auth, login, identity** (browser flows, device agents, credential
   caches): consumer concerns built *on* this library. agenthooks provides the
-  hook I/O substrate those flows plug into.
+  hook I/O substrate those flows plug into. The `telemetry` package takes an
+  endpoint plus static headers as config; acquiring those credentials stays
+  a consumer concern.
 - **HTTP/decision-server transport**: a server-authoritative decision model
   is a consumer of this library — the handler body does the POST. (Claude's
   native `http` hook type is a possible later `install` target.)
+  Observability is the exception: the opt-in `telemetry` package emits one
+  OTel log record per hook event to any OTLP/HTTP logs endpoint — spooled to
+  disk in the hook process and delivered by a detached shipper, so the
+  decision path never gains a network dependency.
 - **Transcript capture/dedup pipelines**: the `transcript` package gives
-  parsing primitives; pipelines belong to consumers.
+  parsing primitives; pipelines belong to consumers. The `telemetry` package
+  records event *content* (prompt text, tool IO, assistant messages) only at
+  an explicit opt-in capture level with built-in credential redaction — off
+  by default; it is telemetry, not a transcript product.
 - **A standalone hooks CLI / config-file DSL**: library-first; Go is the DSL.
 - **In-process Agent-SDK hooks** (Claude Agent SDK callbacks): different
   runtime model; possible future `sdkbridge` package.

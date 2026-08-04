@@ -30,6 +30,8 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/speakeasy-api/agenthooks/telemetry"
 )
 
 const maxPayloadBytes = 32 << 20
@@ -54,6 +56,8 @@ type Runner struct {
 	anyHandlers        []func(context.Context, *Event) error
 	otherByName        map[string][]func(context.Context, *Event) error
 	interceptors       []Interceptor
+	afterDecision      afterDecision
+	telemetryShipStart func(io.Reader) error
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
@@ -232,6 +236,12 @@ func Main(r *Runner) {
 		r.warmClaudeMCP(cwd)
 		os.Exit(0)
 	}
+	if hasInternalFlag(os.Args[1:], telemetryShipFlag) {
+		if err := telemetry.RunShip(stdin); err != nil {
+			r.logger.Warn("agenthooks: telemetry ship", "error", err)
+		}
+		os.Exit(0)
+	}
 	if hasInternalFlag(os.Args[1:], codexMCPWarmFlag) {
 		launch, _, err := decodeCodexLaunchContext(stdin)
 		if err != nil {
@@ -279,6 +289,7 @@ func Main(r *Runner) {
 			r.logger.Warn("agenthooks: starting Codex MCP inventory warm", "error", err)
 		}
 	}
+	r.telemetryShipStart = startTelemetryShip
 	realStdout := os.Stdout
 	if sink, err := logSink(); err == nil {
 		os.Stdout = sink
@@ -429,6 +440,9 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		// (quirk #23); other dialects never populate Stderr.
 		_, _ = stderr.Write(wire.Stderr)
 	}
+	// Telemetry taps in after the response is on the wire: it sees the
+	// final post-policy decision and can never delay or change it.
+	r.tapAfterDecision(typed, base, core, herr)
 	return wire.ExitCode
 }
 

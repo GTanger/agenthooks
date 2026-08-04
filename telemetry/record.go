@@ -1,0 +1,294 @@
+package telemetry
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
+)
+
+// maxContentBytes bounds each captured content value (prompt text, tool IO,
+// assistant message). Longer values are truncated and the record flagged
+// agenthooks.truncated=true, keeping single records under the spool's
+// per-record cap.
+const maxContentBytes = 256 << 10
+
+// buildRecord assembles the OTel log record for one hook event — a wide
+// event whose attribute keys reconcile with what gram's pipeline derives
+// from hook payloads today (RFC §4.3) — plus the synthetic span context
+// carrying the deterministic trace/span identity (§4.4).
+func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanContext) {
+	b := &recordBuilder{redactor: r.cfg.Redactor}
+
+	var rec log.Record
+	rec.SetTimestamp(hr.Time)
+	rec.SetEventName(hr.Kind)
+	rec.SetSeverity(severityOf(hr))
+	rec.SetSeverityText(severityText(severityOf(hr)))
+
+	// Identity and classification.
+	b.str("gram.hook.event", hr.NativeName)
+	b.str("gram.hook.source", hr.Provider)
+	b.str("event.name", hr.Kind)
+	b.str("event.origin", "agenthooks")
+	b.str("agenthooks.provider", hr.Provider)
+	b.str("agenthooks.variant", hr.Variant)
+	b.str("session.id", hr.SessionID)
+	b.str("agenthooks.turn.id", hr.TurnID)
+	b.str("model", hr.Model)
+	b.str("user.email", hr.UserEmail)
+	if hr.Backfilled {
+		b.bool("agenthooks.event.backfilled", true)
+	}
+	b.str("agenthooks.subagent.id", hr.SubagentID)
+	b.str("agenthooks.subagent.type", hr.SubagentType)
+	b.float("agenthooks.hook.duration_ms", hr.HookDurationMS)
+
+	// The final decision as the agent saw and applied it, post
+	// capability-degradation.
+	b.str("gram.hook.decision", hr.Decision.Kind)
+	b.str("agenthooks.decision.reason", hr.Decision.Reason)
+	b.bool("agenthooks.decision.blocking", hr.Decision.Blocking)
+	b.str("agenthooks.decision.source", hr.Decision.Source)
+	b.str("agenthooks.handler.error", hr.HandlerErr)
+
+	if t := hr.Tool; t != nil {
+		b.str("gen_ai.tool.call.id", t.ID)
+		b.str("gram.tool.name", t.Name)
+		b.str("agenthooks.tool.canonical", t.Canonical)
+		if t.Synthesized {
+			b.bool("agenthooks.tool.synthesized", true)
+		}
+		if t.DurationMS != nil {
+			b.float("agenthooks.tool.duration_ms", *t.DurationMS)
+		}
+		b.str("gram.hook.error", t.Error)
+		if len(t.Input) > 0 {
+			if r.cfg.Capture >= CaptureContent {
+				b.content("gen_ai.tool.call.arguments", string(t.Input))
+			} else {
+				b.digest("agenthooks.tool.input", t.Input)
+			}
+		}
+		if len(t.Output) > 0 {
+			if r.cfg.Capture >= CaptureContent {
+				b.content("gen_ai.tool.call.result", string(t.Output))
+			} else {
+				b.digest("agenthooks.tool.output", t.Output)
+			}
+		}
+		if m := t.MCP; m != nil {
+			b.str("gram.mcp.match", mcpMatch(m))
+			b.str("gram.mcp.server_url", redactURL(m.URL))
+			b.str("agenthooks.mcp.server", m.Server)
+			b.str("agenthooks.mcp.tool", m.Tool)
+			b.str("agenthooks.mcp.command", redactCommand(m.Command))
+			if m.FromConfig {
+				b.bool("agenthooks.mcp.from_config", true)
+			}
+		}
+	}
+
+	if hr.Kind == "prompt.submitted" {
+		// Sizes and digests stand in for text at the default capture level:
+		// enough for volume/shape analytics and joins against the
+		// enforcement side, which still sees the full decision inputs.
+		b.digest("agenthooks.prompt", []byte(hr.Prompt))
+	}
+	if hr.FinalMessage != "" {
+		b.int("agenthooks.message.length", len(hr.FinalMessage))
+	}
+	if hr.LoopCount > 0 {
+		b.int("agenthooks.loop_count", hr.LoopCount)
+	}
+	if u := hr.Usage; u != nil {
+		b.intp("gen_ai.usage.input_tokens", u.InputTokens)
+		b.intp("gen_ai.usage.output_tokens", u.OutputTokens)
+		b.intp("gen_ai.usage.cache_read.input_tokens", u.CacheReadTokens)
+		b.intp("gen_ai.usage.cache_creation.input_tokens", u.CacheWriteTokens)
+		if u.Cost != nil {
+			b.float("gen_ai.usage.cost", *u.Cost)
+		}
+	}
+	b.str("agenthooks.notification.message", hr.Notification)
+	b.str("agenthooks.session.source", hr.SessionSource)
+	b.str("agenthooks.session.end_reason", hr.SessionEndReason)
+	b.str("agenthooks.compact.trigger", hr.CompactTrigger)
+	if r.cfg.Capture >= CaptureContent {
+		// Paths are location-revealing, so they ride only at the elevated
+		// capture level — same posture as content.
+		b.str("agenthooks.session.cwd", hr.CWD)
+		b.str("agenthooks.file.path", hr.FilePath)
+	}
+
+	// Body: "Hook: <native event name>", matching the synthetic
+	// gram.log.body the backend writes for derived rows today. At
+	// CaptureContent, prompt and final-message records carry the text as
+	// the body instead — the established body destination.
+	body := b.redact("body", "Hook: "+nativeOrKind(hr))
+	if r.cfg.Capture >= CaptureContent {
+		switch {
+		case hr.Kind == "prompt.submitted" && hr.Prompt != "":
+			body = b.contentValue("body", hr.Prompt)
+		case hr.FinalMessage != "":
+			body = b.contentValue("body", hr.FinalMessage)
+		}
+	}
+	rec.SetBody(attribute.StringValue(body))
+
+	// Deterministic identity, injected via a synthetic span context on the
+	// emit context — no tracer, no spans started (§4.4).
+	toolCallID, toolName := "", ""
+	if hr.Tool != nil {
+		toolCallID, toolName = hr.Tool.ID, hr.Tool.Name
+	}
+	traceID, derived := deriveTraceID(hr.Tool != nil, toolCallID, hr.SessionID, toolName)
+	if !derived {
+		b.bool("agenthooks.session.unidentified", true)
+	}
+	if b.truncated {
+		b.bool("agenthooks.truncated", true)
+	}
+	rec.AddAttributes(b.attrs...)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID,
+		SpanID:  deriveSpanID(hr.SessionID, hr.TurnID, hr.NativeName, toolCallID, hr.Time),
+	})
+	return rec, sc
+}
+
+// mcpMatch mirrors gram's gram.mcp.match semantics: the server-level
+// identifier the matcher resolved — an HTTP/SSE URL, a stdio command, or (as
+// fallback) the mcp__<server>__ prefix from the tool name — transport
+// redacted before it leaves the machine.
+func mcpMatch(m *hookrecord.MCP) string {
+	switch {
+	case m.URL != "":
+		return redactURL(m.URL)
+	case m.Command != "":
+		return redactCommand(m.Command)
+	case m.Server != "":
+		return "mcp__" + m.Server + "__"
+	}
+	return ""
+}
+
+func nativeOrKind(hr *hookrecord.Record) string {
+	if hr.NativeName != "" {
+		return hr.NativeName
+	}
+	return hr.Kind
+}
+
+// severityOf maps the event outcome onto log severity: INFO for ordinary
+// events; WARN for ask/flag-output decisions; ERROR for denies, blocked
+// prompts, tool failures, and handler errors. Gram auto-infers severity when
+// unset, so this mapping only refines it.
+func severityOf(hr *hookrecord.Record) log.Severity {
+	switch {
+	case hr.Decision.Blocking, hr.HandlerErr != "",
+		hr.Tool != nil && hr.Tool.Failed:
+		return log.SeverityError
+	case hr.Decision.Kind == "ask", hr.Decision.Kind == "flag-output":
+		return log.SeverityWarn
+	}
+	return log.SeverityInfo
+}
+
+func severityText(s log.Severity) string {
+	switch s {
+	case log.SeverityError:
+		return "ERROR"
+	case log.SeverityWarn:
+		return "WARN"
+	default:
+		return "INFO"
+	}
+}
+
+// recordBuilder accumulates attributes, skipping empty values and running
+// every string value through the consumer's Redactor before it can touch
+// disk (the built-in transport/content redaction runs before that, at the
+// call sites that carry credential-prone values).
+type recordBuilder struct {
+	attrs     []attribute.KeyValue
+	redactor  func(key, value string) string
+	truncated bool
+}
+
+func (b *recordBuilder) redact(key, value string) string {
+	if b.redactor == nil || value == "" {
+		return value
+	}
+	return b.redactor(key, value)
+}
+
+func (b *recordBuilder) str(key, value string) {
+	if value == "" {
+		return
+	}
+	b.attrs = append(b.attrs, attribute.String(key, b.redact(key, value)))
+}
+
+func (b *recordBuilder) bool(key string, v bool) {
+	b.attrs = append(b.attrs, attribute.Bool(key, v))
+}
+
+func (b *recordBuilder) int(key string, v int) {
+	b.attrs = append(b.attrs, attribute.Int(key, v))
+}
+
+func (b *recordBuilder) intp(key string, v *int) {
+	if v == nil {
+		return
+	}
+	b.attrs = append(b.attrs, attribute.Int(key, *v))
+}
+
+func (b *recordBuilder) float(key string, v float64) {
+	b.attrs = append(b.attrs, attribute.Float64(key, v))
+}
+
+// digest stands in for content at the default capture level: byte length
+// plus SHA-256, under <prefix>.length / <prefix>.sha256.
+func (b *recordBuilder) digest(prefix string, content []byte) {
+	sum := sha256.Sum256(content)
+	b.attrs = append(b.attrs,
+		attribute.Int(prefix+".length", len(content)),
+		attribute.String(prefix+".sha256", hex.EncodeToString(sum[:])),
+	)
+}
+
+// content attaches a captured content value: built-in credential redaction,
+// then the consumer's Redactor, then the per-value truncation cap.
+func (b *recordBuilder) content(key, value string) {
+	if value == "" {
+		return
+	}
+	b.attrs = append(b.attrs, attribute.String(key, b.contentValue(key, value)))
+}
+
+func (b *recordBuilder) contentValue(key, value string) string {
+	v := b.redact(key, redactContent(value))
+	if len(v) > maxContentBytes {
+		v = truncateUTF8(v, maxContentBytes)
+		b.truncated = true
+	}
+	return v
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && s[n]&0xC0 == 0x80 {
+		n--
+	}
+	return s[:n]
+}

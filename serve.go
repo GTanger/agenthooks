@@ -109,6 +109,8 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			r.logger.Error("agenthooks: writing reply", "error", err)
 			return 1
 		}
+		// Telemetry taps in after the reply is on the wire (§4.2).
+		r.tapAfterDecision(typed, base, core, herr)
 	}
 	if err := sc.Err(); err != nil {
 		r.logger.Error("agenthooks: reading shim stream", "error", err)
