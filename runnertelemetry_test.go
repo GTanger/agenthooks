@@ -49,18 +49,30 @@ func readSpooledTelemetry(t *testing.T, dir string) []*lpb.LogRecord {
 		}
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 0, 64<<10), 2<<20)
+		first := true
 		for sc.Scan() {
 			var line struct {
 				Record json.RawMessage `json:"record"`
 			}
-			if json.Unmarshal(sc.Bytes(), &line) != nil || len(line.Record) == 0 {
+			if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+				t.Fatalf("spool line is not JSON: %v", err)
+			}
+			if len(line.Record) == 0 {
+				if !first {
+					t.Fatalf("record-less spool line outside the header position")
+				}
+				first = false
 				continue // header line
 			}
+			first = false
 			var pr lpb.LogRecord
 			if err := protojson.Unmarshal(line.Record, &pr); err != nil {
 				t.Fatalf("spool line is not a protojson LogRecord: %v", err)
 			}
 			records = append(records, &pr)
+		}
+		if err := sc.Err(); err != nil {
+			t.Fatalf("reading spool file: %v", err)
 		}
 		_ = f.Close()
 	}
@@ -182,7 +194,7 @@ func TestTelemetryTapPanicIsContained(t *testing.T) {
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
 		return Deny("blocked"), nil
 	})
-	r.afterDecision = func(any, *Event, decisionCore, recordTiming, error) {
+	r.afterDecision = func(any, *Event, decisionCore, recordTiming, error, string) {
 		panic("recorder bug")
 	}
 	out, code := runWith(t, r, claudeArgs(), fixture(t, "claude/pre_tool_use.json"))

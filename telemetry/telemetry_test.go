@@ -135,6 +135,8 @@ func TestRedactURL(t *testing.T) {
 		{"https://host.example.com/sse?api_key=abc&x=1", "https://host.example.com/sse?api_key=%2A%2A%2A&x=1"},
 		{"https://host.example.com/p?signature=zzz", "https://host.example.com/p?signature=%2A%2A%2A"},
 		{"https://host.example.com/p#frag", "https://host.example.com/p"},
+		// Unparseable URLs could hide credentials anywhere: dropped whole.
+		{"https://u:p@host/%zz", "***"},
 		{"", ""},
 	}
 	for _, tt := range tests {

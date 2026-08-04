@@ -20,7 +20,10 @@ var (
 )
 
 // redactURL strips basic-auth userinfo and fragments and masks secret-named
-// query values while preserving the host, path, and benign parameters.
+// query values while preserving the host, path, and benign parameters. An
+// unparseable URL could hide credentials anywhere, so it is dropped entirely
+// (matchable identity is already hopeless for it) — the one divergence from
+// the relay port, which returns such input untouched.
 func redactURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -28,7 +31,7 @@ func redactURL(raw string) string {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return "***"
 	}
 	u.User = nil
 	u.Fragment = ""

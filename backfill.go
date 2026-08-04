@@ -160,7 +160,7 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 	}
 	// Telemetry still records the backfilled event — with the neutral
 	// applied outcome, since any handler decision was discarded.
-	r.tapAfterDecision(pe, &pe.Event, decisionCore{kind: DecisionNoDecision}, err)
+	r.tapAfterDecision(pe, &pe.Event, decisionCore{kind: DecisionNoDecision}, err, r.now(), "backfill")
 }
 
 // recoverPromptText best-effort recovers the submitted prompt. Only the

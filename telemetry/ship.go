@@ -133,9 +133,13 @@ func runShip(cfg shipConfig) error {
 // resource/scope), then flushes and deletes it. A nil error means the file
 // is gone or intentionally skipped; an export error leaves it in place.
 func shipFile(ctx context.Context, cfg shipConfig, wantID, path string) error {
+	before, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
 	header, records, ok := readSpoolFile(path)
 	if !ok {
-		return nil // unreadable header: leave for the age sweep
+		return nil // unreadable header or torn read: leave for a later run
 	}
 	if header.EndpointID != wantID {
 		return nil // spooled under a different endpoint config
@@ -177,6 +181,14 @@ func shipFile(ctx context.Context, cfg shipConfig, wantID, path string) error {
 	if err := provider.ForceFlush(ctx); err != nil {
 		return err
 	}
+	// A hook process may have appended between the read and the flush;
+	// deleting now would lose those records. Leave the file instead — the
+	// next run re-ships it, and deterministic record identity (§4.4) makes
+	// the duplicate sends harmless.
+	if latest, err := os.Stat(path); err != nil ||
+		latest.Size() != before.Size() || !latest.ModTime().Equal(before.ModTime()) {
+		return nil
+	}
 	return os.Remove(path)
 }
 
@@ -211,6 +223,11 @@ func readSpoolFile(path string) (spoolHeader, []*lpb.LogRecord, bool) {
 			continue
 		}
 		records = append(records, &pr)
+	}
+	if sc.Err() != nil {
+		// A read error is not EOF: shipping a partial read and deleting the
+		// file would silently drop the unread tail. Leave it for a retry.
+		return spoolHeader{}, nil, false
 	}
 	return header, records, true
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -56,15 +57,25 @@ func traceIDFrom(key string) trace.TraceID {
 	return id
 }
 
-// deriveSpanID is deterministic per event:
-// SHA-256("agenthooks|event|" + sessionID + "|" + turnID + "|" + nativeName +
-// "|" + toolCallID + "|" + receiveTimeNanos)[:8]. Identical double-fires and
-// spool replays collide onto the same (trace_id, span_id) and dedupe at the
-// storage layer; nothing joins on span ids today (gram's are random).
+// deriveSpanID is deterministic per event: the first 8 bytes of the SHA-256
+// of "agenthooks|event" followed by the length-prefixed session ID, turn ID,
+// native name, tool-call ID, and receive-time nanos. Length prefixes keep
+// the encoding injective — field values are provider-controlled and may
+// contain the separator — so two distinct events can never collide onto one
+// key (the same reasoning as gram's syntheticToolCallID). Identical
+// double-fires and spool replays still collide onto the same
+// (trace_id, span_id) and dedupe at the storage layer; nothing joins on
+// span ids today (gram's are random).
 func deriveSpanID(sessionID, turnID, nativeName, toolCallID string, receive time.Time) trace.SpanID {
-	key := "agenthooks|event|" + sessionID + "|" + turnID + "|" + nativeName + "|" +
-		toolCallID + "|" + strconv.FormatInt(receive.UnixNano(), 10)
-	sum := sha256.Sum256([]byte(key))
+	var key strings.Builder
+	key.WriteString("agenthooks|event")
+	for _, part := range []string{sessionID, turnID, nativeName, toolCallID, strconv.FormatInt(receive.UnixNano(), 10)} {
+		key.WriteString("|")
+		key.WriteString(strconv.Itoa(len(part)))
+		key.WriteString("|")
+		key.WriteString(part)
+	}
+	sum := sha256.Sum256([]byte(key.String()))
 	var id trace.SpanID
 	copy(id[:], sum[:8])
 	return id

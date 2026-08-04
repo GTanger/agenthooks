@@ -26,9 +26,11 @@ type recordTiming struct {
 // afterDecision is the internal post-decision hook invoked by Runner.Run
 // after applyPolicy and wire encoding, and by the OpenCode serve loop after
 // the reply is encoded. Unlike OnAny observers — which run before the
-// decision pipeline — it sees the final applied decision, the timing, and
-// the handler error. WithTelemetry installs one.
-type afterDecision func(typed any, base *Event, core decisionCore, timing recordTiming, herr error)
+// decision pipeline — it sees the final applied decision, the timing, the
+// handler error, and where the decision came from ("handler", "policy" when
+// the runner's failure policy substituted it, "backfill" for synthesized
+// reporting-only events). WithTelemetry installs one.
+type afterDecision func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string)
 
 // WithTelemetry installs rec as the runner's telemetry recorder: one OTel
 // log record per hook event, appended to the local disk spool after the
@@ -44,8 +46,8 @@ func WithTelemetry(rec *telemetry.Recorder) Option {
 		if rec == nil {
 			return
 		}
-		r.afterDecision = func(typed any, base *Event, core decisionCore, timing recordTiming, herr error) {
-			if err := rec.RecordHook(buildHookRecord(typed, base, core, timing, herr)); err != nil {
+		r.afterDecision = func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) {
+			if err := rec.RecordHook(buildHookRecord(typed, base, core, timing, herr, source)); err != nil {
 				r.logger.Warn("agenthooks: telemetry record failed", "error", err)
 				return
 			}
@@ -55,11 +57,13 @@ func WithTelemetry(rec *telemetry.Recorder) Option {
 }
 
 // tapAfterDecision delivers the post-decision snapshot to the telemetry
-// recorder. Fail-open, always: the tap runs after the response is written,
-// is panic-guarded like observers, and its work is bounded I/O with no
-// network — recorder errors log a warning and never change a decision,
-// delay a response, or surface as a hook failure.
-func (r *Runner) tapAfterDecision(typed any, base *Event, core decisionCore, herr error) {
+// recorder. encodedAt is sampled at the encoding boundary so the duration
+// measures dispatch-to-response-encoded, not the provider write. Fail-open,
+// always: the tap runs after the response is written, is panic-guarded like
+// observers, and its work is bounded I/O with no network — recorder errors
+// log a warning and never change a decision, delay a response, or surface
+// as a hook failure.
+func (r *Runner) tapAfterDecision(typed any, base *Event, core decisionCore, herr error, encodedAt time.Time, source string) {
 	if r.afterDecision == nil {
 		return
 	}
@@ -68,13 +72,13 @@ func (r *Runner) tapAfterDecision(typed any, base *Event, core decisionCore, her
 			r.logger.Warn("agenthooks: telemetry tap panic", "panic", p)
 		}
 	}()
-	timing := recordTiming{receive: base.Time, duration: r.now().Sub(base.Time)}
-	r.afterDecision(typed, base, core, timing, herr)
+	timing := recordTiming{receive: base.Time, duration: encodedAt.Sub(base.Time)}
+	r.afterDecision(typed, base, core, timing, herr, source)
 }
 
 // buildHookRecord projects the typed event plus the final decision into the
 // flat record the telemetry package consumes.
-func buildHookRecord(typed any, base *Event, core decisionCore, timing recordTiming, herr error) *hookrecord.Record {
+func buildHookRecord(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) *hookrecord.Record {
 	hr := &hookrecord.Record{
 		Provider:       string(base.Provider),
 		Variant:        string(base.Variant),
@@ -92,12 +96,11 @@ func buildHookRecord(typed any, base *Event, core decisionCore, timing recordTim
 			Kind:     core.kind.String(),
 			Reason:   core.reason,
 			Blocking: core.blocks(),
-			Source:   "handler",
+			Source:   source,
 		},
 	}
 	if herr != nil {
 		hr.HandlerErr = herr.Error()
-		hr.Decision.Source = "policy"
 	}
 	if base.Agent != nil {
 		hr.SubagentID = base.Agent.ID

@@ -236,7 +236,7 @@ type Config struct {
 	Resource map[string]string
 
 	// SpoolDir overrides the spool location. Default:
-	// $XDG_STATE_HOME/agenthooks/telemetry (or os.UserCacheDir fallback).
+	// $XDG_STATE_HOME/agenthooks/telemetry/spool (or os.UserCacheDir fallback).
 	SpoolDir string
 	// Capture selects the content level: CaptureAttributes (default),
 	// CaptureContent (prompt text, tool IO, assistant messages on the
@@ -433,8 +433,10 @@ derivation (`canonicalTraceID`, `ingest_hooks.go:1190-1203`) is:
   events use rule 3 (session hash), so a session's prompt/stop/session
   records share one trace — the "session trace" grouping.
 - `SpanId`: deterministic per event —
-  `hex(SHA-256("agenthooks|event|" + sessionID + "|" + turnID + "|" +
-  nativeName + "|" + toolCallID + "|" + receiveTimeNanos)[:8])`. Today gram
+  `hex(SHA-256("agenthooks|event" + the length-prefixed sessionID, turnID,
+  nativeName, toolCallID, and receiveTimeNanos)[:8])` (length prefixes keep
+  the encoding injective for separator-bearing values, the same reasoning
+  as `syntheticToolCallID`). Today gram
   generates *random* span ids (`generateSpanID`, `impl.go:287-291`) and
   nothing joins on them, so determinism is a strict improvement: identical
   double-fires and spool replays collide onto the same `(trace_id, span_id)`
@@ -489,7 +491,8 @@ simplified because records are append-friendly:
   protobuf the shipper puts on the wire, and human-readable for debugging.
   The spool exporter performs the (small) `sdk/log.Record` → OTLP proto
   transform using the records' public getters; Resource + scope are
-  written once per file header, not per line. One file per writing process
+  written once per file, on a leading header line (itself a standalone
+  JSON value, keeping the file NDJSON), not per record. One file per writing process
   per window: `<unixnano>-<pid>.ndjson`, created with O_APPEND; lexical
   order = chrono order. No tmp/rename dance is needed for append-only
   NDJSON — a torn last line is detected and skipped by the shipper.

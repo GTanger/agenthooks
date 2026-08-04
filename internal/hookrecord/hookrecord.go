@@ -91,6 +91,8 @@ type Decision struct {
 	Reason   string
 	Blocking bool
 	// Source is "handler" when the decision came out of the handler
-	// pipeline, "policy" when the runner's failure policy substituted it.
+	// pipeline, "policy" when the runner's failure policy substituted it
+	// (handler failure or encode fallback), and "backfill" for synthesized
+	// reporting-only events whose handler decision is discarded.
 	Source string
 }

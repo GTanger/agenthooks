@@ -196,9 +196,14 @@ func (r *Recorder) MaybeSpawnShipper(spawn func(stdin io.Reader) error) {
 		Headers:  r.cfg.Headers,
 	})
 	if err != nil {
+		_ = os.Remove(marker)
 		return
 	}
-	_ = spawn(bytes.NewReader(append(payload, '\n')))
+	if err := spawn(bytes.NewReader(append(payload, '\n'))); err != nil {
+		// Un-arm the debounce so the next event retries immediately instead
+		// of waiting out a window no shipper is servicing.
+		_ = os.Remove(marker)
+	}
 }
 
 // defaultSpoolDir resolves the platform spool location:

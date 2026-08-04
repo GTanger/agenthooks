@@ -409,9 +409,11 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 
 	core, herr := r.dispatch(hctx, typed)
+	decisionSource := "handler"
 	if herr != nil {
 		r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", herr)
 		core = failCore(pol, base)
+		decisionSource = "policy"
 	}
 	core = r.applyPolicy(typed, base, core, pol)
 
@@ -426,12 +428,14 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		if encErr != nil {
 			r.logger.Error("agenthooks: encode failed", "error", encErr)
 			core = failCore(pol, base)
+			decisionSource = "policy"
 			wire, encErr = encodeDecision(typed, core)
 			if encErr != nil {
 				wire = noOpResponse(provider)
 			}
 		}
 	}
+	encodedAt := r.now()
 	if len(wire.Stdout) > 0 {
 		_, _ = stdout.Write(wire.Stdout)
 	}
@@ -442,7 +446,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	// Telemetry taps in after the response is on the wire: it sees the
 	// final post-policy decision and can never delay or change it.
-	r.tapAfterDecision(typed, base, core, herr)
+	r.tapAfterDecision(typed, base, core, herr, encodedAt, decisionSource)
 	return wire.ExitCode
 }
 
