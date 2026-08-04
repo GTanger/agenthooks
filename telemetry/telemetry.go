@@ -1,7 +1,7 @@
 // Package telemetry emits one OpenTelemetry log record (a wide event) per
-// hook event, spooled to local disk in the hook process and shipped
-// asynchronously over OTLP/HTTP by a detached copy of the consumer binary —
-// never adding network latency to the hook's critical path.
+// hook event, spooled to local disk in the hook process and shipped over
+// OTLP/HTTP by a separate long-running exporter process — never adding
+// network latency (or process spawning) to the hook's critical path.
 //
 // Wire the recorder into a Runner with agenthooks.WithTelemetry:
 //
@@ -12,6 +12,12 @@
 //	if err != nil { ... }
 //	r := agenthooks.New(agenthooks.WithTelemetry(rec))
 //
+// Hook processes only append to the spool. Delivery is the exporter's job:
+// `mybinary agenthooks exporter`, a daemon started and supervised
+// externally (a service manager or device agent), which tails the spool and
+// ships it (see ExporterMain and RunExporter). Until an exporter runs,
+// records sit in the spool, bounded by the age/size caps.
+//
 // The feature is opt-in and fail-open by construction: without the option
 // nothing changes; with it, recorder failures degrade to a logged warning
 // and never affect the decision path. Any OTLP logs endpoint works; gram is
@@ -19,13 +25,10 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,7 +36,6 @@ import (
 	"runtime/debug"
 	"sort"
 	"strings"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
@@ -85,6 +87,17 @@ type Config struct {
 	// its built-in transport-credential redaction (URLs, commands, token-
 	// shaped values) first; Redactor runs after it.
 	Redactor func(key string, value string) string
+
+	// HonorTraceparent opts into W3C trace-context parenting: when the
+	// hook process carries a valid TRACEPARENT environment variable, its
+	// trace ID and sampled flag replace the deterministic trace ID on
+	// emitted records, and the deterministic ID moves to the
+	// agenthooks.deterministic_trace_id attribute so hash-derived joins
+	// (e.g. gram's) still work. Off by default: the deterministic
+	// derivation is what backend joins key on, and an ambient trace ID
+	// would silently regroup records. Each record keeps its own
+	// deterministic span ID either way.
+	HonorTraceparent bool
 }
 
 // Recorder captures hook events as OTel log records into the disk spool.
@@ -97,6 +110,12 @@ type Recorder struct {
 	spool      *spoolExporter
 	provider   *sdklog.LoggerProvider
 	logger     log.Logger
+
+	// Ambient W3C trace context, read once at construction when
+	// Config.HonorTraceparent is set and TRACEPARENT is valid.
+	ambientTrace trace.TraceID
+	ambientFlags trace.TraceFlags
+	ambientOK    bool
 }
 
 // scopeName identifies this package as the instrumentation scope of every
@@ -106,7 +125,7 @@ const scopeName = "github.com/speakeasy-api/agenthooks/telemetry"
 // New builds a Recorder: it validates the endpoint, creates the spool
 // directory, and stands up the sdk/log pipeline — a synchronous simple
 // processor feeding the spool exporter. No network I/O happens here or on
-// any later Recorder call; shipping is the detached shipper's job.
+// any later Recorder call; delivery is the exporter daemon's job.
 func New(cfg Config) (*Recorder, error) {
 	endpoint := strings.TrimSpace(cfg.Endpoint)
 	if endpoint == "" {
@@ -143,14 +162,18 @@ func New(cfg Config) (*Recorder, error) {
 		sdklog.WithResource(res),
 		sdklog.WithProcessor(sdklog.NewSimpleProcessor(spool)),
 	)
-	return &Recorder{
+	r := &Recorder{
 		cfg:        cfg,
 		spoolDir:   dir,
 		endpointID: id,
 		spool:      spool,
 		provider:   provider,
 		logger:     provider.Logger(scopeName, log.WithInstrumentationVersion(agenthooksVersion())),
-	}, nil
+	}
+	if cfg.HonorTraceparent {
+		r.ambientTrace, r.ambientFlags, r.ambientOK = parseTraceparent(os.Getenv("TRACEPARENT"))
+	}
+	return r, nil
 }
 
 // RecordHook captures one post-decision hook event: it builds the log
@@ -168,52 +191,6 @@ func (r *Recorder) RecordHook(hr *hookrecord.Record) error {
 	// The simple processor exports synchronously, but Logger.Emit swallows
 	// the exporter's error; surface it so the runner can log a warning.
 	return r.spool.takeErr()
-}
-
-// RunShip drains the spool once, reading the ship config from stdin. It is
-// the method form of the package-level RunShip, present so *Recorder
-// satisfies agenthooks.TelemetryRecorder and the root package needs no
-// import of this package. It ignores the receiver's config on purpose: the
-// detached shipper's config arrives over stdin from whichever process
-// spawned it.
-func (r *Recorder) RunShip(stdin io.Reader) error {
-	return RunShip(stdin)
-}
-
-// MaybeSpawnShipper starts a detached shipper run when spooled records exist
-// and the debounce window allows, handing it the spool location and endpoint
-// config as a single-line JSON stdin payload so credentials never appear in
-// argv. spawn is the runner's self-exec hook (detached re-exec of the
-// current binary with the internal ship flag). Best-effort: failures are
-// logged by the next shipper run, never surfaced to the hook path.
-func (r *Recorder) MaybeSpawnShipper(spawn func(stdin io.Reader) error) {
-	if spawn == nil || len(spoolFiles(r.spoolDir)) == 0 {
-		return
-	}
-	marker := filepath.Join(r.spoolDir, lastShipMarker)
-	if info, err := os.Stat(marker); err == nil && time.Since(info.ModTime()) < shipDebounce {
-		return
-	}
-	// Best-effort debounce: two hooks racing this write both spawn, and the
-	// ship lock serializes them into one useful run plus a no-op.
-	if err := os.WriteFile(marker, nil, 0o600); err != nil {
-		return
-	}
-	payload, err := json.Marshal(shipConfig{
-		V:        1,
-		SpoolDir: r.spoolDir,
-		Endpoint: r.cfg.Endpoint,
-		Headers:  r.cfg.Headers,
-	})
-	if err != nil {
-		_ = os.Remove(marker)
-		return
-	}
-	if err := spawn(bytes.NewReader(append(payload, '\n'))); err != nil {
-		// Un-arm the debounce so the next event retries immediately instead
-		// of waiting out a window no shipper is servicing.
-		_ = os.Remove(marker)
-	}
 }
 
 // defaultSpoolDir resolves the platform spool location:

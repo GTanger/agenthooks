@@ -92,8 +92,9 @@ ingest path, no new storage model.
 1. **Agent-side telemetry becomes a built-in, opt-in feature of this OSS
    library**: a `telemetry` package plus a runner option that emits one
    **OpenTelemetry log record (wide event)** per hook event, spooled to
-   local disk and shipped asynchronously over **OTLP** by a detached
-   process — never adding latency to the hook's critical path. (DESIGN.md
+   local disk and shipped over **OTLP** by a long-running, externally
+   supervised exporter process — never adding latency (or process
+   spawning) to the hook's critical path. (DESIGN.md
    §11's non-goals will simply be rewritten when the package lands —
    nothing has shipped, so no formal amendment is carried in this RFC.)
 2. **The gram backend logs enforcement itself, at decision time,
@@ -149,9 +150,10 @@ pseudo trace IDs (§4.4). No new correlation ID is introduced.
 - **N3** — Shipping a general transcript-capture product in the library.
   Content capture (prompt/tool-IO/assistant text) is an explicit, opt-in
   capture level with redaction hooks — off by default (§4.6).
-- **N4** — In-process exporters for the common process-per-event mode. The
-  spool + detached shipper is the one delivery path (the long-lived OpenCode
-  `serve` mode may batch in-process as an optimization; open question O7).
+- **N4** — In-process delivery for the common process-per-event mode. The
+  spool + external exporter is the one delivery path (the long-lived
+  OpenCode `serve` mode may batch in-process as an optimization; open
+  question O7).
 - **N5** — Auth/login flows. The library takes endpoint + headers as config;
   acquiring credentials stays a consumer concern (speakeasy-hooks already
   has this stack: `gram/hooks/relay/auth.go`).
@@ -230,8 +232,8 @@ plus one runner option in the root package:
 // possible — the interface is a linkage boundary, not an extension point.
 type TelemetryRecorder interface {
 	RecordHook(hr *hookrecord.Record) error
-	MaybeSpawnShipper(spawn func(stdin io.Reader) error)
-	RunShip(stdin io.Reader) error // detached-shipper entry, dispatched by Main
+	// Exporter-daemon entry behind the `agenthooks exporter` verb.
+	ExporterMain(ctx context.Context, args []string, stderr io.Writer) int
 }
 
 func WithTelemetry(rec TelemetryRecorder) Option
@@ -259,9 +261,31 @@ type Config struct {
 	// The library always applies built-in transport-credential redaction
 	// (URLs, commands) first; Redactor runs after it.
 	Redactor func(key string, value string) string
+	// HonorTraceparent opts into W3C TRACEPARENT env-var parenting (§4.4).
+	// Off by default: deterministic trace IDs are what backend joins key on.
+	HonorTraceparent bool
 }
 
 func New(cfg Config) (*Recorder, error)
+
+// Exporter surface (§4.7): the long-running delivery daemon. SignalConfig
+// is per-signal on purpose — logs today; traces/metrics slots can be added
+// to ExporterConfig later without breaking consumers.
+type SignalConfig struct {
+	Endpoint string            // full OTLP/HTTP endpoint URL for the signal
+	Headers  map[string]string // auth headers (e.g. Gram-Key)
+	Timeout  time.Duration     // per-request export timeout (default 10s)
+}
+type ExporterConfig struct {
+	SpoolDir string        // spool to drain (default: the recorder default)
+	Interval time.Duration // spool poll interval (default 2s)
+	Logger   *slog.Logger
+	Logs     SignalConfig
+}
+
+// RunExporter runs the daemon until ctx ends; exported so consumers can
+// embed the exporter in their own process instead of using the verb.
+func RunExporter(ctx context.Context, cfg ExporterConfig) error
 ```
 
 Consumer usage (what speakeasy-hooks would do):
@@ -278,6 +302,14 @@ Opt-in and fail-open by construction: without the option, nothing changes;
 with it, a recorder failure degrades to a logged warning, never an error on
 the pipeline (G1).
 
+Delivery is a separate concern with its own entry point: the consumer
+binary's argv contract gains an **`exporter` verb** alongside `run`,
+`notify`, and `serve` — `mybinary agenthooks exporter [flags]` — dispatched
+by `Runner.Run` to the installed recorder's `ExporterMain` (§4.7). Hook
+invocations never ship and never spawn; provisioning and supervising the
+exporter process is the consumer's job (speakeasy-hooks would install it as
+a service via its device agent — that repo's concern, not this library's).
+
 #### Dependencies: the OTel-Go SDK, configured for this shape
 
 The `telemetry` package **uses the OTel-Go libraries internally** and
@@ -289,7 +321,7 @@ transitive `go.opentelemetry.io/proto/otlp` + `google.golang.org/protobuf`.
 Rationale:
 
 - **The backend is already designed to ingest OTLP.** Gram's ingest, and
-  any generic collector a customer points the shipper at, speak OTLP; the
+  any generic collector a customer points the exporter at, speak OTLP; the
   SDK guarantees wire-format correctness — Resource semantics, typed
   attribute encoding, severity mapping, trace-context fields on log
   records — instead of this library re-implementing and re-validating that
@@ -298,11 +330,12 @@ Rationale:
   (in-memory batch processor + network exporter) target long-lived
   processes, so the library doesn't use them on the hook path: the hook
   process runs the SDK pipeline with a **custom spool exporter** (§4.5)
-  and no network; the detached shipper runs the same pipeline with the
-  **official `otlploghttp` exporter** (§4.7). The SDK is the record
-  construction/semantics layer; the spool + detached shipper remain the
-  delivery architecture. All locked constraints hold: fail-open, disk as
-  the durability boundary, zero critical-path network.
+  and no network; the exporter daemon runs the same pipeline with the
+  **official `otlploghttp` exporter** (§4.7) — where the SDK's long-lived
+  defaults are exactly right. The SDK is the record construction/semantics
+  layer; the spool + external exporter remain the delivery architecture.
+  All locked constraints hold: fail-open, disk as the durability boundary,
+  zero critical-path network.
 - **go.mod footprint, honestly.** The module's `go.mod` (essentially
   dependency-free today) gains the OTel SDK and its transitive closure.
   Binaries that never import `telemetry` do not *link* any of it (the Go
@@ -314,10 +347,10 @@ Rationale:
   (above) rather than `*telemetry.Recorder`: the **root package itself has
   no telemetry import** (`go list -deps` on the root package shows zero
   OTel packages), so nothing links the SDK until the consumer's own import
-  of `telemetry` does. The detached-shipper dispatch in `Main` rides the
-  same boundary — the ship flag calls the recorder's `RunShip` method when
-  one was installed and no-ops otherwise (a binary without a recorder never
-  spawns a shipper in the first place). **Recommendation:** keep
+  of `telemetry` does. The `exporter` verb dispatch rides the same
+  boundary — `Runner.Run` calls the recorder's `ExporterMain` when one was
+  installed and rejects the verb otherwise (a binary without a recorder has
+  no exporter). **Recommendation:** keep
   `telemetry` in the main module for v1 (a nested `telemetry/go.mod`
   submodule would keep the root `go.mod` pristine but adds multi-module
   versioning/tagging friction that isn't warranted yet; revisit if
@@ -509,6 +542,31 @@ This also keeps the door open for a future traces signal (§8): the same
 derivation can later mint real spans with unchanged IDs, so historical log
 records and future spans would share identity.
 
+**Ambient `TRACEPARENT` — opt-in, deterministic IDs stay the default.**
+Launch environments that already run inside a distributed trace (CI
+pipelines, orchestrators) may export a W3C `TRACEPARENT` env var into the
+hook process. Honoring it wholesale would silently **break gram's trace-ID
+joins** — the shadow-MCP provenance lookup and the session grouping both
+compute `hashToolCallIDToTraceID(...)` and expect the record's `TraceId` to
+match — so the precedence is deliberately conservative:
+
+1. **Default (`HonorTraceparent` unset): TRACEPARENT is ignored.** Records
+   carry the deterministic derivation above. This is the only mode where
+   gram's joins work unmodified, so it is the only safe default.
+2. **`Config.HonorTraceparent = true`:** if the hook process carries a
+   *valid* traceparent (version ≠ `ff`, non-zero IDs), its **trace ID and
+   sampled flag** take the record's trace-context fields, parenting the
+   record into the ambient trace, and the deterministic trace ID moves to
+   the `agenthooks.deterministic_trace_id` attribute so a gram-side join
+   can still be recovered by mapping. Malformed or absent values fall back
+   to the deterministic derivation.
+3. In both modes the **span ID stays deterministic per event** — the
+   traceparent's span ID names the *launcher's* span, not this event, and
+   replay dedupe relies on per-event span identity.
+
+The opt-in is thus double-gated: the consumer sets the config knob *and*
+the launching environment sets the env var. Neither alone changes anything.
+
 ### 4.5 Disk spool
 
 The spool is where the SDK meets disk: the hook process's `LoggerProvider`
@@ -526,19 +584,24 @@ simplified because records are append-friendly:
   where `record` is a **protojson-encoded OTLP `LogRecord`**
   (`go.opentelemetry.io/proto/otlp/logs/v1`) — spool entries are already
   wire-shaped: canonical OTLP/JSON, losslessly round-trippable to the
-  protobuf the shipper puts on the wire, and human-readable for debugging.
+  protobuf the exporter puts on the wire, and human-readable for debugging.
   The spool exporter performs the (small) `sdk/log.Record` → OTLP proto
   transform using the records' public getters; Resource + scope are
   written once per file, on a leading header line (itself a standalone
   JSON value, keeping the file NDJSON), not per record. One file per writing process
   per window: `<unixnano>-<pid>.ndjson`, created with O_APPEND; lexical
   order = chrono order. No tmp/rename dance is needed for append-only
-  NDJSON — a torn last line is detected and skipped by the shipper.
+  NDJSON — a torn last line is detected and never shipped by the
+  exporter's tailer.
 - **Caps (write-time enforced, lock-free like `trimSpool`):** max age 14 d,
   max total 64 MiB, max single record 1 MiB (content-capture payloads
   truncated with `agenthooks.record.truncated=true`). When the spool is full or
   unwritable, the record is **dropped and counted** (`agenthooks-async.log`
-  gets a warning) — never an error to the pipeline.
+  gets a warning) — never an error to the pipeline. These are the
+  *append-side* caps; the exporter runs the same age/size sweep at start
+  and periodically (§4.7), which also bounds the damage when **no exporter
+  is provisioned at all**: records simply sit in the spool, capped, until
+  one runs.
 
 ### 4.6 Capture levels, privacy, redaction
 
@@ -557,58 +620,90 @@ simplified because records are append-friendly:
 - `Event.Raw` is **never** exported at any level (fidelity stays local; the
   backend explicitly does not use raw for behavior today, design.go:276).
 
-### 4.7 Detached shipper lifecycle
+### 4.7 Exporter lifecycle (long-running, externally supervised)
 
-Reuses the library's existing self-exec machinery (`detach.go:124-174`
-`detachSelf`/`startDetachedSelf`, `detachSysProcAttr` — Setsid on Unix,
-`CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS` on Windows via
-`detach_windows.go`), the same pattern as the Claude/Codex MCP-list warms
-(`--agenthooks-internal-*` flags) and the relay drain
-(`gram/hooks/relay/drain.go:352-366`):
+Delivery is a **long-running exporter process**, started and supervised
+externally (a service manager, or speakeasy's device agent). Hook processes
+never spawn anything: they append to the spool and exit. (The library's
+detached self-exec machinery, `detach.go`, remains — for the MCP inventory
+warms only.)
 
-1. **Spawn:** after the recorder appends a record, it calls
-   `maybeSpawnShipper()`: if the spool is non-empty and the debounce marker
-   (`last-ship` file, 30 s window, mirroring `maybeSpawnDrain`) allows, it
-   re-execs the current binary detached with
-   `--agenthooks-internal-telemetry-ship`, passing spool dir + endpoint
-   config via a single-line JSON stdin payload (the codex launch-context
-   pattern, `detach.go:66-118`) so credentials never appear in argv.
-2. **Lock:** the shipper takes a `flock` on `spool/ship.lock` (no-op on
-   Windows; deterministic record identity makes double-ship harmless — same
-   trade-off the relay drain documents).
-3. **Replay through the official exporter:** the shipper stands up its own
-   `sdk/log` pipeline — `BatchProcessor` + **`otlploghttp` exporter**
-   configured from the spooled endpoint config (`WithEndpointURL`,
-   `WithHeaders` for `Gram-Key`/`Gram-Project`, `WithTimeout` ≈ 10 s,
-   `WithRetry` for backoff, gzip on by default). It reads files
-   oldest-first, decodes each protojson line back into a log record, and
-   re-emits it through the logs API with the spooled timestamps preserved
-   and the spooled trace/span IDs re-injected via the same
-   span-context-on-context mechanism as §4.4. Batching (size/count/flush
-   thresholds), protobuf encoding, compression, per-request timeout, and
-   transient retry/backoff (including `Retry-After` handling) all come
-   from the SDK exporter — not hand-rolled.
-4. **File lifecycle (stays custom):** after each file's records are
-   emitted, `ForceFlush` the provider; on nil error delete the file, on
-   error leave it in place and end the run (the next hook event re-arms
-   the debounce). A total run budget of ~60 s bounds the detached process;
-   deterministic record identity (§4.4) makes any re-send after a partial
-   flush harmless. Definitive 4xx (auth) → stop the run, leave files, log
-   once.
-5. **Cleanup / crash safety:** age/size sweeps run at shipper start; torn
-   tails skipped; the shipper never touches files younger than 2 s that are
-   still owned by a live pid (avoid racing an in-flight append);
-   killed shippers leave only re-shippable state.
-6. **Trigger coverage:** because spawn is piggybacked on hook activity, a
-   machine that goes quiet ships its tail on the *next* session (same
-   accepted gap as the relay spool; the consumer binary may also expose a
-   `telemetry ship` subcommand for device-agent-driven flushes, as
-   speakeasy-hooks does with `drain`).
+- **Entry points.** `mybinary agenthooks exporter [flags]` — a verb in the
+  argv contract next to `run`/`notify`/`serve`, dispatched by `Runner.Run`
+  to the installed recorder's `ExporterMain` — or, for consumers with their
+  own daemon, the exported `telemetry.RunExporter(ctx, ExporterConfig)`.
+- **Configuration** comes from whoever starts the exporter, resolved as
+  *recorder config → environment → flags* (later wins):
+  - Base: the recorder's own `Config` (endpoint, headers, spool dir) — so
+    plain `mybinary agenthooks exporter` ships to the endpoint the binary
+    records for, with zero extra config.
+  - Environment, per the standard OTel exporter conventions:
+    `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (used verbatim) or
+    `OTEL_EXPORTER_OTLP_ENDPOINT` (signal path `/v1/logs` appended);
+    `OTEL_EXPORTER_OTLP_[LOGS_]HEADERS` (comma-separated `k=v`,
+    percent-decoded); `OTEL_EXPORTER_OTLP_[LOGS_]TIMEOUT` (milliseconds).
+  - Flags override both: `--endpoint=URL`, `--header=K=V` (repeatable),
+    `--spool-dir=PATH`, `--timeout=DUR`, `--interval=DUR`.
+  The config shape is **per-signal** (`ExporterConfig.Logs SignalConfig`)
+  so traces/metrics can be added later without breaking anything.
+- **Lifecycle.** Runs indefinitely; supervision (restart policy, boot
+  registration) is external. On SIGINT/SIGTERM it shuts down gracefully
+  and idempotently: the current batch flush completes, the checkpoint is
+  persisted, exit 0. It holds `spool/exporter.lock` (`internal/filelock`)
+  for its lifetime; a second instance **waits** for the lock (logging
+  once) rather than double-shipping, so supervisor restart overlap is
+  harmless.
+- **Watch mechanism: polling**, every `Interval` (default 2 s). Chosen
+  deliberately over a platform watcher: it is Windows-safe, dependency
+  free, and a couple of seconds of shipping latency is irrelevant for
+  telemetry. The exporter opens files read-only per pass and holds no
+  handles between passes (the Windows lesson: open-read-close, so writers
+  and sweeps can always delete).
+- **Tailing + checkpoint.** Files ship oldest-first (lexical = chrono).
+  Each pass reads a file from its checkpointed byte offset; only
+  **newline-terminated** lines ship — an unterminated tail is an append in
+  progress (or a crash artifact) and is never shipped, which is what makes
+  tailing a growing active segment safe without any age heuristics.
+  Offsets are persisted to `spool/exporter.checkpoint`
+  (`{"v":1,"files":{"<name>":<offset>}}`, write-temp-then-rename) after
+  every successful flush. A lost or corrupt checkpoint just re-ships —
+  **at-least-once** delivery, with deterministic record identity (§4.4)
+  making duplicates dedupe at the storage layer.
+- **Replay through the official exporter.** Spooled protojson lines decode
+  back into log records and re-emit through an `sdk/log` pipeline —
+  `BatchProcessor` + **`otlploghttp`** (`WithEndpointURL`, `WithHeaders`,
+  `WithTimeout`, gzip) — with spooled timestamps preserved and trace/span
+  identity re-injected via the §4.4 span-context mechanism. Emission is
+  chunked (≤512 records per `ForceFlush`) so the batch queue never
+  overflows and checkpoints stay granular. Protobuf encoding, compression,
+  per-request timeout, and transient retry (including `Retry-After`) come
+  from the SDK exporter.
+- **Deletion.** A file is deleted only when fully shipped (offset = size),
+  unchanged since the read, and quiescent for ≥2 s — and its checkpoint
+  entry is removed *before* the delete, so a crash between the two
+  re-ships rather than skips. Records spooled under a different endpoint
+  config (the per-file `endpoint_id` fingerprint) are left alone: they
+  belong to a differently-configured exporter. A torn tail that sits
+  unchanged past 2 min marks a dead writer; the file is reaped.
+- **Failure policy.** Transient failures (network down, 5xx, 429) retry
+  forever with capped exponential backoff (2 s → 5 min) on top of the
+  SDK's per-request retry; spool files and checkpoints are untouched, so
+  nothing is lost during endpoint downtime. **Definitive config errors —
+  an unparseable endpoint, or HTTP 400/401/403/404 — exit non-zero** so
+  the supervisor surfaces the failure (restart policy + its own backoff)
+  instead of the exporter silently spinning against rejected credentials.
+  This is a deliberate choice over "log loudly and keep running": a
+  supervised daemon's crash loop is visible in service status; a quietly
+  backing-off one is not.
+- **Sweeps.** The exporter owns runtime age/size sweeps (start + every
+  60 s) and prunes checkpoint entries for vanished files; the recorder
+  keeps its append-side caps (§4.5).
 
 Division of labor: the SDK exporter owns the wire (protobuf encoding, HTTP,
-gzip, timeout, retry/backoff); custom code owns process lifecycle (debounce
-spawn, flock, file ordering and deletion, torn-tail handling, run budget) —
-exactly the part the SDK has no opinion on for short-lived processes.
+gzip, timeout, per-request retry); custom code owns the daemon lifecycle
+(lock, polling, tail offsets and checkpoint, file ordering and deletion,
+torn-tail handling, sweeps, signal handling) — the part the SDK has no
+opinion on.
 
 **Encoding note:** `otlploghttp` emits OTLP **protobuf**
 (`application/x-protobuf`) — the Go OTLP/HTTP exporters do not offer a JSON
@@ -616,23 +711,32 @@ mode. Gram's endpoint parses OTLP/JSON today, so the SDK decision adds one
 small gram-side item: a protobuf decode branch at ingest (§5.2 item 4,
 resolving O10).
 
-Latency accounting: the critical path gains one O_APPEND write plus, at most
-once per 30 s, a detached `fork/exec` (which `startDetachedSelf` already
-performs today for MCP warms without measurable impact). The provider only
-ever waits on the parent hook process.
+Latency accounting: the hook critical path gains exactly one O_APPEND
+write — no spawn, no network, ever. Deployment accounting: telemetry sits
+in the spool (bounded by the caps) until an exporter runs; **provisioning
+the exporter is the consumer/device-agent's job** — this library provides
+the verb and the library function, not the service registration.
 
 ### 4.8 Failure behavior (normative)
 
 - Telemetry is **fail-open, always**: recorder errors, full spools,
-  unwritable dirs, dead endpoints, and shipper crashes must never change a
-  decision, delay a response, or surface as a hook failure. This mirrors
-  and strengthens the fail-open discipline of OnAny observers
+  unwritable dirs, dead endpoints, and exporter crashes or absence must
+  never change a decision, delay a response, or surface as a hook failure.
+  This mirrors and strengthens the fail-open discipline of OnAny observers
   (`agenthooks.go:450-462`).
 - The recorder is guarded by the same panic-to-error conversion as
   observers, and its work is bounded I/O with no network.
 - Misconfiguration (empty endpoint, bad spool dir) fails at
   `telemetry.New` — construction time, in the consumer's control — not at
   event time.
+- Sweep ownership: the recorder enforces the append-side caps at write
+  time; the exporter owns runtime sweeps (§4.7). If no exporter is ever
+  provisioned, the caps bound disk usage and old records age out — a
+  configuration gap degrades to bounded local disk, never to hook-path
+  behavior.
+- The exporter itself is the one place a failure is *meant* to be loud:
+  definitive delivery-config errors exit non-zero for the supervisor
+  (§4.7); everything else retries quietly forever.
 
 ### 4.9 Positioning vs Claude Code's native OTEL events (dual-rail)
 
@@ -894,10 +998,10 @@ because both streams land in the **same table with the same trace-ID
 derivation**.
 
 **Phase 0 — library (this repo)**
-1. Land the `telemetry` package, `WithTelemetry`, spool, shipper, and the
-   internal post-decision tap. Opt-in; no consumer change yet. Update
-   DESIGN.md's non-goals to reflect the telemetry package.
-   Fixture-test record determinism per provider
+1. Land the `telemetry` package, `WithTelemetry`, spool, the exporter (verb
+   + `RunExporter`), and the internal post-decision tap. Opt-in; no
+   consumer change yet. Update DESIGN.md's non-goals to reflect the
+   telemetry package. Fixture-test record determinism per provider
    (golden corpus already exists in `agenthookstest`), including a
    cross-check that the emitted `TraceId` matches gram's
    `canonicalTraceID` for the same inputs.
@@ -998,23 +1102,27 @@ switched).
   with a synchronous effects handshake; `mcp_attribution` repairs Claude's
   redacted native-OTEL rows via Redis staging. Keep both on the (gating)
   enforcement rail, carry them as record attributes read at logs-ingest
-  time, or redesign as shipper-adjacent side channels? Leaning: keep on the
-  enforcement rail initially; revisit after cutover.
+  time, or redesign as exporter-adjacent side channels? Leaning: keep on
+  the enforcement rail initially; revisit after cutover.
 - **O7 — OpenCode serve mode.** The long-lived daemon could batch records
   in-process and export directly (no spool/detach needed). Allow an
   in-process exporter path for serve mode, or keep one uniform spool
   pipeline everywhere (simpler, always crash-safe)? Leaning: uniform spool
   first, optimize later.
-- **O8 — Shipper trigger for idle machines.** Spool tails ship on next hook
-  activity. Do we additionally expose `agenthooks telemetry ship` on the
-  consumer argv surface (like `speakeasy-hooks drain`) for device-agent /
-  cron flushes? (Cheap; leaning yes.)
+- **O8 — Delivery entry point: resolved into the design.** Rev 2 asked
+  whether to expose an explicit ship subcommand alongside the
+  activity-piggybacked spawn. The architecture change (§4.7) answered it
+  by replacing the spawn entirely: `agenthooks exporter` **is** the
+  delivery entry point — a long-running, externally supervised daemon —
+  and hooks never trigger shipping at all. Idle machines are covered by
+  the exporter's continuous polling rather than a cron flush. No decision
+  left open.
 - **O9 — Enforcement-allow row volume.** §5.1 logs allows as well as
   denies. At fleet scale this multiplies gating-event rows; if volume is a
   concern, sample allows (keep all denies/warns) — needs a gram capacity
   check.
 - **O10 — OTLP encoding: resolved into the design.** With the OTel-Go SDK
-  decision (§4.1 Dependencies), the shipper exports via `otlploghttp`,
+  decision (§4.1 Dependencies), the exporter ships via `otlploghttp`,
   which emits OTLP **protobuf** — so gram's logs endpoint gains a small
   protobuf→protojson transcode branch in its request decoder (§5.2 item 4,
   Phase 1 of the cutover). Gram's existing JSON parsing is untouched and
@@ -1043,8 +1151,9 @@ switched).
   all eliminated by reusing the built-out logs pipeline. **Deliberately not
   precluded:** the deterministic trace/span identity in §4.4 is chosen so a
   future traces signal mints spans with the *same* IDs, letting historical
-  log records and future spans share identity; the spool/shipper are
-  transport-agnostic and would gain a second OTLP path, not a rewrite.
+  log records and future spans share identity; the spool/exporter are
+  transport-agnostic (the per-signal `ExporterConfig` shape reserves the
+  slot) and would gain a second OTLP path, not a rewrite.
 - **Hand-rolled OTLP structs instead of the OTel-Go SDK** — considered
   (briefly the draft position) to keep `go.mod` dependency-free: hand-write
   the OTLP/JSON mapping and skip `sdk/log`/`otlploghttp` entirely.
@@ -1054,17 +1163,27 @@ switched).
   encoder is a parallel implementation to keep conformant forever. The
   SDK's process-shape mismatch is handled by configuration, not avoidance:
   a custom spool exporter on the hook path, the official exporter in the
-  detached shipper (§4.1 Dependencies, §4.5, §4.7).
+  external exporter daemon (§4.1 Dependencies, §4.5, §4.7).
 - **Metrics as the primary signal** — rejected: pre-aggregation discards
   the wide-event dimensionality gram's model is built on; gram already
   derives metrics from rows server-side.
 - **Ship telemetry synchronously with a short timeout** — rejected: any
   network on the critical path eventually bites (provider timeouts are
-  unforgiving, §6 of DESIGN.md); the spool+detach pattern is already proven
-  twice in this ecosystem (agenthooks MCP warms, relay drain).
+  unforgiving, §6 of DESIGN.md); spool-and-drain is already proven in this
+  ecosystem (relay drain).
+- **Debounced detached shipper spawned from hook activity (rev 2 of this
+  RFC, briefly implemented)** — each hook event could re-exec the binary as
+  a short-lived detached shipper behind a 30 s debounce, the MCP-warm
+  pattern. Replaced by the supervised exporter: hooks doing process
+  management meant fork/exec on the hook path (however debounced),
+  credentials passed over stdin between processes, ad-hoc run budgets
+  instead of a real lifecycle, and idle machines whose spool tails only
+  shipped on the *next* session. A daemon under external supervision is
+  operationally boring in all four dimensions, and the argv contract
+  already had a natural place for the verb.
 - **Keep telemetry in the consumer binary only (status quo of DESIGN.md
   §11)** — rejected by prior decision: every consumer would rebuild the
-  spool/shipper/record-model machinery; the library owns the wire and the
+  spool/exporter/record-model machinery; the library owns the wire and the
   event taxonomy, so it is the right owner of the record schema.
 - **New correlation ID** — rejected by prior decision: session ID + turn ID
   already exist on both rails (`SessionInfo`, `HookIngestSession`) and

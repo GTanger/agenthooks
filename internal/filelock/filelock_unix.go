@@ -1,7 +1,7 @@
 //go:build linux || darwin
 
 // Package filelock provides a best-effort, non-blocking advisory file lock,
-// used to serialize telemetry shipper runs on one spool directory.
+// used to serialize telemetry exporter instances on one spool directory.
 package filelock
 
 import (

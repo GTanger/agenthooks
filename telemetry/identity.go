@@ -57,6 +57,31 @@ func traceIDFrom(key string) trace.TraceID {
 	return id
 }
 
+// parseTraceparent parses a W3C trace-context traceparent value
+// ("00-<32 hex trace id>-<16 hex parent span id>-<2 hex flags>"). ok is
+// false for malformed values, the invalid all-zero IDs, and the reserved
+// version ff. Only the trace ID and flags are consumed by this library: the
+// parent span ID identifies the launcher's span, not this event, and each
+// record keeps its own deterministic span identity (§4.4).
+func parseTraceparent(v string) (trace.TraceID, trace.TraceFlags, bool) {
+	parts := strings.Split(strings.TrimSpace(v), "-")
+	if len(parts) < 4 || len(parts[0]) != 2 || parts[0] == "ff" {
+		return trace.TraceID{}, 0, false
+	}
+	traceID, err := trace.TraceIDFromHex(strings.ToLower(parts[1]))
+	if err != nil || !traceID.IsValid() {
+		return trace.TraceID{}, 0, false
+	}
+	if _, err := trace.SpanIDFromHex(strings.ToLower(parts[2])); err != nil {
+		return trace.TraceID{}, 0, false
+	}
+	flags, err := strconv.ParseUint(parts[3], 16, 8)
+	if err != nil || len(parts[3]) != 2 {
+		return trace.TraceID{}, 0, false
+	}
+	return traceID, trace.TraceFlags(flags), true
+}
+
 // deriveSpanID is deterministic per event: the first 8 bytes of the SHA-256
 // of "agenthooks|event" followed by the length-prefixed session ID, turn ID,
 // native name, tool-call ID, and receive-time nanos. Length prefixes keep

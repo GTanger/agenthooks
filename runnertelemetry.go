@@ -1,18 +1,12 @@
 package agenthooks
 
 import (
+	"context"
 	"io"
 	"time"
 
 	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
 )
-
-// telemetryShipFlag re-execs this binary as the detached telemetry shipper,
-// following the --agenthooks-internal-* convention of the MCP inventory
-// warms. The spool location and endpoint config arrive as a single-line
-// JSON stdin payload (the codex launch-context pattern) so credentials
-// never appear in argv.
-const telemetryShipFlag = "--agenthooks-internal-telemetry-ship"
 
 // recordTiming carries the tap's timing view of one event: the library
 // receive time and the dispatch-to-response-encoded duration — hook
@@ -41,20 +35,21 @@ type afterDecision func(typed any, base *Event, core decisionCore, timing record
 type TelemetryRecorder interface {
 	// RecordHook captures one post-decision hook event into the local spool.
 	RecordHook(hr *hookrecord.Record) error
-	// MaybeSpawnShipper starts a detached shipper run when spooled records
-	// exist and the debounce window allows; spawn re-execs the binary.
-	MaybeSpawnShipper(spawn func(stdin io.Reader) error)
-	// RunShip drains the spool once, reading the ship config from stdin. It
-	// runs inside the detached shipper process Main dispatches.
-	RunShip(stdin io.Reader) error
+	// ExporterMain runs the long-lived telemetry exporter daemon behind the
+	// `agenthooks exporter` verb: it resolves config (recorder config, then
+	// OTEL_EXPORTER_OTLP_* env vars, then args), handles SIGINT/SIGTERM
+	// gracefully, and returns the process exit code.
+	ExporterMain(ctx context.Context, args []string, stderr io.Writer) int
 }
 
 // WithTelemetry installs rec as the runner's telemetry recorder: one OTel
 // log record per hook event, appended to the local disk spool after the
-// decision is on the wire and shipped asynchronously by a detached process.
-// Opt-in and fail-open by construction — without the option nothing changes;
-// with it, a recorder failure degrades to a logged warning, never an error
-// on the pipeline. See the telemetry package for configuration:
+// decision is on the wire. The hook process never ships and never spawns —
+// delivery belongs to the exporter daemon (`mybinary agenthooks exporter`),
+// which is started and supervised externally. Opt-in and fail-open by
+// construction — without the option nothing changes; with it, a recorder
+// failure degrades to a logged warning, never an error on the pipeline. See
+// the telemetry package for configuration:
 //
 //	rec, err := telemetry.New(telemetry.Config{Endpoint: ...})
 //	if err != nil { ... }
@@ -67,13 +62,11 @@ func WithTelemetry(rec TelemetryRecorder) Option {
 		if rec == nil {
 			return
 		}
-		r.telemetryRunShip = rec.RunShip
+		r.telemetryExporter = rec.ExporterMain
 		r.afterDecision = func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) {
 			if err := rec.RecordHook(buildHookRecord(typed, base, core, timing, herr, source)); err != nil {
 				r.logger.Warn("agenthooks: telemetry record failed", "error", err)
-				return
 			}
-			rec.MaybeSpawnShipper(r.telemetryShipStart)
 		}
 	}
 }
@@ -187,11 +180,4 @@ func toolHookRecord(t *ToolCall, post *ToolPostEvent) *hookrecord.Tool {
 		tr.DurationMS = post.DurationMS
 	}
 	return tr
-}
-
-// startTelemetryShip is the self-exec hook MaybeSpawnShipper drives: a
-// detached copy of this binary running only the internal ship flag, config
-// streamed over stdin.
-func startTelemetryShip(stdin io.Reader) error {
-	return startDetachedSelf([]string{telemetryShipFlag}, stdin)
 }

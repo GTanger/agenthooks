@@ -5,10 +5,15 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	cpb "go.opentelemetry.io/proto/otlp/common/v1"
 	lpb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -31,7 +36,7 @@ func newTestTelemetry(t *testing.T) (*telemetry.Recorder, string) {
 }
 
 // readSpooledTelemetry decodes the spool's protojson OTLP records the way
-// the detached shipper does.
+// the exporter's tailer does.
 func readSpooledTelemetry(t *testing.T, dir string) []*lpb.LogRecord {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -201,6 +206,97 @@ func TestTelemetryTapPanicIsContained(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"deny"`) {
 		t.Errorf("tap panic must not leak into the wire: %q (exit %d)", out, code)
 	}
+}
+
+func TestExporterVerbWithoutRecorder(t *testing.T) {
+	r := quietRunner()
+	var out, errb strings.Builder
+	code := r.Run(context.Background(), []string{"agenthooks", "exporter"}, strings.NewReader(""), &out, &errb)
+	if code != 64 {
+		t.Errorf("exporter verb without WithTelemetry: exit %d, want 64", code)
+	}
+	if !strings.Contains(errb.String(), "WithTelemetry") {
+		t.Errorf("stderr must point at WithTelemetry: %q", errb.String())
+	}
+}
+
+func TestExporterVerbRejectsBadFlags(t *testing.T) {
+	rec, _ := newTestTelemetry(t)
+	r := quietRunner(WithTelemetry(rec))
+	var out, errb strings.Builder
+	code := r.Run(context.Background(), []string{"agenthooks", "exporter", "--bogus"}, strings.NewReader(""), &out, &errb)
+	if code != 64 {
+		t.Errorf("bad exporter flag: exit %d, want 64 (stderr: %s)", code, errb.String())
+	}
+}
+
+// TestExporterVerbShipsSpool is the end-to-end argv path: a hook run spools
+// a record, then `agenthooks exporter` (config inherited from the recorder)
+// ships it and shuts down cleanly on context cancellation.
+func TestExporterVerbShipsSpool(t *testing.T) {
+	requests := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	rec, err := telemetry.New(telemetry.Config{Endpoint: srv.URL + "/v1/logs", SpoolDir: dir})
+	if err != nil {
+		t.Fatalf("telemetry.New: %v", err)
+	}
+	r := quietRunner(WithTelemetry(rec))
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		return Deny("blocked"), nil
+	})
+	if _, code := runWith(t, r, claudeArgs(), fixture(t, "claude/pre_tool_use.json")); code != 0 {
+		t.Fatalf("hook run exit %d", code)
+	}
+	if len(readSpooledTelemetry(t, dir)) != 1 {
+		t.Fatalf("expected one spooled record before the exporter runs")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exit := make(chan int, 1)
+	var errb safeBuffer
+	go func() {
+		exit <- r.Run(ctx, []string{"agenthooks", "exporter", "--interval=20ms"},
+			strings.NewReader(""), io.Discard, &errb)
+	}()
+	select {
+	case <-requests:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("exporter never delivered; stderr: %s", errb.String())
+	}
+	cancel()
+	select {
+	case code := <-exit:
+		if code != 0 {
+			t.Errorf("graceful exporter shutdown: exit %d, want 0; stderr: %s", code, errb.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("exporter did not shut down on cancellation")
+	}
+}
+
+// safeBuffer is a mutex-guarded strings.Builder for cross-goroutine writes.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func TestServeLoopTapsTelemetry(t *testing.T) {

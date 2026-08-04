@@ -91,6 +91,74 @@ func TestDeriveTraceIDRandomFallback(t *testing.T) {
 	}
 }
 
+func TestParseTraceparent(t *testing.T) {
+	traceID, flags, ok := parseTraceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	if !ok || traceID.String() != "4bf92f3577b34da6a3ce929d0e0e4736" || flags != 0x01 {
+		t.Errorf("valid traceparent: trace=%s flags=%v ok=%v", traceID, flags, ok)
+	}
+	for _, bad := range []string{
+		"",
+		"not-a-traceparent",
+		"00-00000000000000000000000000000000-00f067aa0ba902b7-01", // all-zero trace id
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-zzzz67aa0ba902b7-01", // bad span hex
+		"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // reserved version
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",    // missing flags
+	} {
+		if _, _, ok := parseTraceparent(bad); ok {
+			t.Errorf("parseTraceparent(%q) accepted", bad)
+		}
+	}
+}
+
+func TestRecorderHonorsTraceparentOnlyWhenOptedIn(t *testing.T) {
+	t.Setenv("TRACEPARENT", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+
+	// Default: deterministic identity, TRACEPARENT ignored.
+	rec := newTestRecorder(t, nil)
+	if err := rec.RecordHook(toolPreRecord()); err != nil {
+		t.Fatal(err)
+	}
+	_, records := readSpool(t, rec.spoolDir)
+	deterministic := hex.EncodeToString(records[0].GetTraceId())
+	if deterministic == "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("TRACEPARENT must be ignored without HonorTraceparent")
+	}
+	if _, present := attrMap(records[0])["agenthooks.deterministic_trace_id"]; present {
+		t.Errorf("no deterministic_trace_id attribute when the trace-context field carries it")
+	}
+
+	// Opted in: the ambient trace ID takes the trace-context field, the
+	// deterministic ID moves to an attribute, the span ID stays derived.
+	optIn := newTestRecorder(t, func(cfg *Config) { cfg.HonorTraceparent = true })
+	if err := optIn.RecordHook(toolPreRecord()); err != nil {
+		t.Fatal(err)
+	}
+	_, records2 := readSpool(t, optIn.spoolDir)
+	if got := hex.EncodeToString(records2[0].GetTraceId()); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("honored trace id = %s, want the ambient TRACEPARENT trace", got)
+	}
+	if got := attrMap(records2[0])["agenthooks.deterministic_trace_id"]; got != deterministic {
+		t.Errorf("deterministic trace id attribute = %v, want %s", got, deterministic)
+	}
+	if hex.EncodeToString(records2[0].GetSpanId()) != hex.EncodeToString(records[0].GetSpanId()) {
+		t.Errorf("span identity must stay deterministic under TRACEPARENT")
+	}
+	if records2[0].GetFlags() != 0x01 {
+		t.Errorf("sampled flag lost: %d", records2[0].GetFlags())
+	}
+
+	// Opted in but no ambient context: deterministic identity as usual.
+	t.Setenv("TRACEPARENT", "")
+	plain := newTestRecorder(t, func(cfg *Config) { cfg.HonorTraceparent = true })
+	if err := plain.RecordHook(toolPreRecord()); err != nil {
+		t.Fatal(err)
+	}
+	_, records3 := readSpool(t, plain.spoolDir)
+	if got := hex.EncodeToString(records3[0].GetTraceId()); got != deterministic {
+		t.Errorf("without TRACEPARENT the deterministic id stays: %s", got)
+	}
+}
+
 func TestDeriveSpanIDDeterministic(t *testing.T) {
 	at := time.Unix(1700000000, 123456789)
 	a := deriveSpanID("sess-1", "turn-1", "PreToolUse", "toolu_1", at)

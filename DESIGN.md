@@ -78,7 +78,8 @@ Non-goals for v1 (§11): auth/login flows, HTTP transport to a decision server,
 transcript capture pipelines. These are consumer concerns layered *on top of*
 this library, not inside it. (Observability is the exception: the opt-in
 `telemetry` package emits one OTel log record per hook event, spooled locally
-and shipped off the critical path — see §11.)
+and delivered by a separate, externally supervised exporter process — see
+§11.)
 
 ---
 
@@ -702,8 +703,9 @@ in CI without the actual agents.
   native `http` hook type is a possible later `install` target.)
   Observability is the exception: the opt-in `telemetry` package emits one
   OTel log record per hook event to any OTLP/HTTP logs endpoint — spooled to
-  disk in the hook process and delivered by a detached shipper, so the
-  decision path never gains a network dependency.
+  disk in the hook process and delivered by a long-running exporter
+  (`mybinary agenthooks exporter`, supervised externally), so the decision
+  path never gains a network dependency or spawns a process.
 - **Transcript capture/dedup pipelines**: the `transcript` package gives
   parsing primitives; pipelines belong to consumers. The `telemetry` package
   records event *content* (prompt text, tool IO, assistant messages) only at

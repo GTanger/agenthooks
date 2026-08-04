@@ -10,12 +10,13 @@ import (
 
 // invocation is the parsed argv contract baked into generated configs:
 //
-//	mybinary agenthooks run    --provider=claude-code            # stdin JSON
-//	mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor CLI
-//	mybinary agenthooks notify --provider=codex                  # legacy codex notify (argv JSON)
-//	mybinary agenthooks serve  --provider=opencode               # NDJSON daemon for the shim
+//	mybinary agenthooks run      --provider=claude-code            # stdin JSON
+//	mybinary agenthooks run      --provider=cursor --argv-payload  # legacy cursor CLI
+//	mybinary agenthooks notify   --provider=codex                  # legacy codex notify (argv JSON)
+//	mybinary agenthooks serve    --provider=opencode               # NDJSON daemon for the shim
+//	mybinary agenthooks exporter [--endpoint=... --header=K=V ...] # telemetry exporter daemon
 type invocation struct {
-	mode        string // "run", "notify", "serve"
+	mode        string // "run", "notify", "serve", "exporter"
 	provider    Provider
 	variant     Variant
 	confidence  DetectionConfidence
@@ -23,6 +24,9 @@ type invocation struct {
 	payload     string
 	timeout     time.Duration
 	filter      *ToolMatcher
+	// exporterArgs are the raw args after the exporter verb, parsed by the
+	// telemetry exporter itself (its flag set is not this package's).
+	exporterArgs []string
 }
 
 var validProviders = map[Provider]bool{
@@ -53,6 +57,10 @@ func parseArgs(args []string) (*invocation, error) {
 		case "run", "notify", "serve":
 			inv.mode = rest[0]
 			rest = rest[1:]
+		case "exporter":
+			inv.mode = "exporter"
+			inv.exporterArgs = rest[1:]
+			return inv, nil
 		}
 	}
 	var positional []string

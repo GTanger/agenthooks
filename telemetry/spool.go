@@ -26,18 +26,16 @@ import (
 // runs a custom exporter whose Export appends records to NDJSON spool files
 // instead of touching the network. Entries are protojson-encoded OTLP
 // LogRecords — already wire-shaped, losslessly round-trippable to the
-// protobuf the shipper puts on the wire, and human-readable for debugging.
+// protobuf the exporter puts on the wire, and human-readable for debugging.
 // Resource and scope are written once per file header, not per line.
 //
 // Layout: <spoolDir>/<unixnano>-<pid>.ndjson, created with O_APPEND; lexical
 // order = chrono order. No tmp/rename dance is needed for append-only
-// NDJSON — a torn last line is detected and skipped by the shipper.
+// NDJSON — a torn last line is detected and skipped by the exporter's
+// tailer.
 
 const (
 	spoolFileSuffix = ".ndjson"
-	lastShipMarker  = "last-ship"
-	shipLockName    = "ship.lock"
-	shipDebounce    = 30 * time.Second
 
 	maxSpoolAge    = 14 * 24 * time.Hour
 	maxSpoolBytes  = 64 << 20 // total across the spool dir
@@ -65,7 +63,7 @@ type spoolLine struct {
 
 // spoolExporter implements sdk/log.Exporter by appending records to the
 // spool. Each export opens, appends, and closes the process's spool file —
-// no handle is held between events, so a concurrent shipper (or, on
+// no handle is held between events, so a concurrent exporter daemon (or, on
 // Windows, anything at all) can always delete shipped files, and a file
 // deleted mid-session is simply recreated with a fresh header on the next
 // event. All failure paths drop the record and stash the error for the
@@ -224,8 +222,8 @@ func spoolSize(dir string) int64 {
 // sweepSpool enforces the age and size caps: files older than maxSpoolAge
 // are removed, then oldest files go first until the spool fits the byte
 // budget. keep names a file that must survive the size sweep (the writer's
-// open file). Lock-free and best-effort — a racing shipper deleting the same
-// file is harmless.
+// open file). Lock-free and best-effort — a racing exporter deleting the
+// same file is harmless.
 func sweepSpool(dir string, now time.Time, keep string) {
 	names := spoolFiles(dir)
 	type fileInfo struct {
@@ -260,7 +258,7 @@ func sweepSpool(dir string, now time.Time, keep string) {
 }
 
 // toProtoRecord transforms an sdk/log record into the OTLP LogRecord the
-// spool stores and the shipper replays — the same mapping the official
+// spool stores and the exporter replays — the same mapping the official
 // exporter's transform performs.
 func toProtoRecord(rec *sdklog.Record) *lpb.LogRecord {
 	pr := &lpb.LogRecord{
@@ -367,7 +365,7 @@ func arrayValue(vals []*cpb.AnyValue) *cpb.AnyValue {
 }
 
 // resourceFromProto rebuilds the SDK resource a spool header carries, for
-// the shipper's replay provider.
+// the exporter's replay provider.
 func resourceFromProto(raw json.RawMessage, schemaURL string) (*resource.Resource, error) {
 	if len(raw) == 0 {
 		return resource.Empty(), nil

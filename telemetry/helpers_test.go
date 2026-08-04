@@ -61,7 +61,8 @@ func toolPreRecord() *hookrecord.Record {
 	}
 }
 
-// readSpool decodes every spooled record across the directory's files.
+// readSpool decodes every spooled record across the directory's files,
+// through the same tailer the exporter uses.
 func readSpool(t *testing.T, dir string) (spoolHeader, []*lpb.LogRecord) {
 	t.Helper()
 	names := spoolFiles(dir)
@@ -71,12 +72,14 @@ func readSpool(t *testing.T, dir string) (spoolHeader, []*lpb.LogRecord) {
 	var header spoolHeader
 	var all []*lpb.LogRecord
 	for _, name := range names {
-		h, records, ok := readSpoolFile(filepath.Join(dir, name))
+		tail, ok := readSpoolTail(filepath.Join(dir, name), 0)
 		if !ok {
 			t.Fatalf("unreadable spool file %s", name)
 		}
-		header = h
-		all = append(all, records...)
+		header = tail.header
+		for _, entry := range tail.entries {
+			all = append(all, entry.rec)
+		}
 	}
 	return header, all
 }

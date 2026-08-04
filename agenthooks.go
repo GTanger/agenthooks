@@ -55,8 +55,7 @@ type Runner struct {
 	otherByName        map[string][]func(context.Context, *Event) error
 	interceptors       []Interceptor
 	afterDecision      afterDecision
-	telemetryShipStart func(io.Reader) error
-	telemetryRunShip   func(io.Reader) error
+	telemetryExporter  func(ctx context.Context, args []string, stderr io.Writer) int
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
@@ -235,18 +234,6 @@ func Main(r *Runner) {
 		r.warmClaudeMCP(cwd)
 		os.Exit(0)
 	}
-	if hasInternalFlag(os.Args[1:], telemetryShipFlag) {
-		// The ship entry point comes from the recorder WithTelemetry
-		// installed, so binaries that never opt in carry no telemetry code:
-		// without a recorder the flag is a no-op (and no shipper is ever
-		// spawned to reach it).
-		if r.telemetryRunShip != nil {
-			if err := r.telemetryRunShip(stdin); err != nil {
-				r.logger.Warn("agenthooks: telemetry ship", "error", err)
-			}
-		}
-		os.Exit(0)
-	}
 	if hasInternalFlag(os.Args[1:], codexMCPWarmFlag) {
 		launch, _, err := decodeCodexLaunchContext(stdin)
 		if err != nil {
@@ -294,7 +281,6 @@ func Main(r *Runner) {
 			r.logger.Warn("agenthooks: starting Codex MCP inventory warm", "error", err)
 		}
 	}
-	r.telemetryShipStart = startTelemetryShip
 	realStdout := os.Stdout
 	if sink, err := logSink(); err == nil {
 		os.Stdout = sink
@@ -308,6 +294,16 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 64
+	}
+	if inv.mode == "exporter" {
+		// The telemetry exporter daemon: dispatched through the recorder
+		// WithTelemetry installed so this package stays free of telemetry
+		// imports; a binary that never opts in has no exporter.
+		if r.telemetryExporter == nil {
+			_, _ = fmt.Fprintln(stderr, "agenthooks: the exporter verb needs a telemetry recorder; install one with agenthooks.WithTelemetry")
+			return 64
+		}
+		return r.telemetryExporter(ctx, inv.exporterArgs, stderr)
 	}
 	if inv.mode == "serve" {
 		return r.serve(ctx, inv, stdin, stdout, stderr)

@@ -155,7 +155,11 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	rec.SetBody(attribute.StringValue(body))
 
 	// Deterministic identity, injected via a synthetic span context on the
-	// emit context — no tracer, no spans started (§4.4).
+	// emit context — no tracer, no spans started (§4.4). With
+	// HonorTraceparent and an ambient TRACEPARENT, the launcher's trace ID
+	// takes the trace-context field and the deterministic ID rides as an
+	// attribute so hash-derived joins keep working; the span ID stays
+	// deterministic per event in both cases (replay dedupe relies on it).
 	toolCallID, toolName := "", ""
 	if hr.Tool != nil {
 		toolCallID, toolName = hr.Tool.ID, hr.Tool.Name
@@ -164,16 +168,22 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	if !derived {
 		b.bool("agenthooks.session.unidentified", true)
 	}
+	scc := trace.SpanContextConfig{
+		TraceID: traceID,
+		SpanID:  deriveSpanID(hr.SessionID, hr.TurnID, hr.NativeName, toolCallID, hr.Time),
+	}
+	if r.ambientOK {
+		scc.TraceID = r.ambientTrace
+		scc.TraceFlags = r.ambientFlags
+		if derived {
+			b.str("agenthooks.deterministic_trace_id", traceID.String())
+		}
+	}
 	if b.truncated {
 		b.bool("agenthooks.record.truncated", true)
 	}
 	rec.AddAttributes(b.attrs...)
-
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID: traceID,
-		SpanID:  deriveSpanID(hr.SessionID, hr.TurnID, hr.NativeName, toolCallID, hr.Time),
-	})
-	return rec, sc
+	return rec, trace.NewSpanContext(scc)
 }
 
 // mcpMatch mirrors gram's gram.mcp.match semantics: the server-level

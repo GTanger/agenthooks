@@ -123,7 +123,7 @@ func TestSpoolRoundTrip(t *testing.T) {
 		t.Errorf("command not redacted: %s", cmd)
 	}
 
-	// Replay: the shipper-side decode must reproduce the record.
+	// Replay: the exporter-side decode must reproduce the record.
 	replayed, sc := replayRecord(pr, time.Now())
 	if sc.TraceID().String() != "cec2e4457e6d548f3c3d4cbc02b8f15e" {
 		t.Errorf("replayed trace id = %s", sc.TraceID())
