@@ -64,25 +64,30 @@ type spoolLine struct {
 }
 
 // spoolExporter implements sdk/log.Exporter by appending records to the
-// spool. All failure paths drop the record and record the error for the
+// spool. Each export opens, appends, and closes the process's spool file —
+// no handle is held between events, so a concurrent shipper (or, on
+// Windows, anything at all) can always delete shipped files, and a file
+// deleted mid-session is simply recreated with a fresh header on the next
+// event. All failure paths drop the record and stash the error for the
 // caller to log — never an error to the hook pipeline (§4.8).
 type spoolExporter struct {
 	dir        string
 	endpointID string
 
-	mu      sync.Mutex
-	f       *os.File
-	written int64
-	swept   bool
-	lastErr error
+	mu       sync.Mutex
+	fileName string // this process's spool file; rotated past maxFileBytes
+	swept    bool
+	lastErr  error
 }
 
 func newSpoolExporter(dir, endpointID string) *spoolExporter {
 	return &spoolExporter{dir: dir, endpointID: endpointID}
 }
 
-// Export appends the records to the current spool file, opening (and
-// header-stamping) it on first use and rotating it past maxFileBytes.
+// Export appends the records to the process's spool file. It always returns
+// nil: surfacing the error through the SDK would only reach the OTel global
+// error handler (stderr noise in the hook process); the runner tap reads it
+// via takeErr and logs a proper warning instead.
 func (e *spoolExporter) Export(_ context.Context, records []sdklog.Record) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -90,17 +95,15 @@ func (e *spoolExporter) Export(_ context.Context, records []sdklog.Record) error
 		// Write-time caps, enforced lock-free like the relay's trimSpool:
 		// one sweep per process is enough for process-per-event hooks and
 		// keeps serve mode bounded via the per-append budget check below.
-		sweepSpool(e.dir, time.Now(), e.fileName())
+		sweepSpool(e.dir, time.Now(), e.fileName)
 		e.swept = true
 	}
-	var firstErr error
 	for i := range records {
-		if err := e.appendRecord(&records[i]); err != nil && firstErr == nil {
-			firstErr = err
+		if err := e.appendRecord(&records[i]); err != nil {
+			e.lastErr = err
 		}
 	}
-	e.lastErr = firstErr
-	return firstErr
+	return nil
 }
 
 func (e *spoolExporter) appendRecord(rec *sdklog.Record) error {
@@ -112,41 +115,49 @@ func (e *spoolExporter) appendRecord(rec *sdklog.Record) error {
 	if err != nil {
 		return fmt.Errorf("telemetry: encoding spool line: %w", err)
 	}
+	line = append(line, '\n')
 	if len(line) > maxRecordBytes {
 		return fmt.Errorf("telemetry: record of %d bytes exceeds the %d byte cap; dropped", len(line), maxRecordBytes)
 	}
 	if spoolSize(e.dir)+int64(len(line)) > maxSpoolBytes {
-		sweepSpool(e.dir, time.Now(), e.fileName())
+		sweepSpool(e.dir, time.Now(), e.fileName)
 		if spoolSize(e.dir)+int64(len(line)) > maxSpoolBytes {
 			return fmt.Errorf("telemetry: spool over the %d byte cap; record dropped", int64(maxSpoolBytes))
 		}
 	}
-	if e.f != nil && e.written > maxFileBytes {
-		_ = e.f.Close()
-		e.f = nil
-		e.written = 0
+	if e.fileName == "" {
+		e.fileName = strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(os.Getpid()) + spoolFileSuffix
 	}
-	if e.f == nil {
-		if err := e.openFile(rec); err != nil {
+	path := filepath.Join(e.dir, e.fileName)
+	if info, err := os.Stat(path); err == nil && info.Size() > maxFileBytes {
+		e.fileName = strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(os.Getpid()) + spoolFileSuffix
+		path = filepath.Join(e.dir, e.fileName)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("telemetry: opening spool file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("telemetry: stat spool file: %w", err)
+	}
+	if info.Size() == 0 {
+		header, err := e.headerLine(rec)
+		if err != nil {
 			return err
 		}
+		line = append(header, line...)
 	}
-	n, err := e.f.Write(append(line, '\n'))
-	e.written += int64(n)
-	if err != nil {
+	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("telemetry: appending spool record: %w", err)
 	}
 	return nil
 }
 
-// openFile creates the process's spool file and writes the header carrying
-// the record's resource and instrumentation scope.
-func (e *spoolExporter) openFile(rec *sdklog.Record) error {
-	name := strconv.FormatInt(time.Now().UnixNano(), 10) + "-" + strconv.Itoa(os.Getpid()) + spoolFileSuffix
-	f, err := os.OpenFile(filepath.Join(e.dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("telemetry: creating spool file: %w", err)
-	}
+// headerLine builds the file header carrying the record's resource and
+// instrumentation scope.
+func (e *spoolExporter) headerLine(rec *sdklog.Record) ([]byte, error) {
 	hdr := spoolHeader{V: 1, EndpointID: e.endpointID}
 	res := rec.Resource()
 	if res.Len() > 0 {
@@ -161,24 +172,9 @@ func (e *spoolExporter) openFile(rec *sdklog.Record) error {
 	}
 	line, err := json.Marshal(hdr)
 	if err != nil {
-		_ = f.Close()
-		return fmt.Errorf("telemetry: encoding spool header: %w", err)
+		return nil, fmt.Errorf("telemetry: encoding spool header: %w", err)
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("telemetry: writing spool header: %w", err)
-	}
-	e.f = f
-	return nil
-}
-
-// fileName returns the base name of the exporter's open spool file, "" when
-// none is open. Callers must hold e.mu.
-func (e *spoolExporter) fileName() string {
-	if e.f == nil {
-		return ""
-	}
-	return filepath.Base(e.f.Name())
+	return append(line, '\n'), nil
 }
 
 // takeErr returns and clears the last append error, letting RecordHook
@@ -195,16 +191,8 @@ func (e *spoolExporter) takeErr() error {
 // is nothing buffered to flush.
 func (e *spoolExporter) ForceFlush(context.Context) error { return nil }
 
-// Shutdown closes the current spool file.
-func (e *spoolExporter) Shutdown(context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.f != nil {
-		_ = e.f.Close()
-		e.f = nil
-	}
-	return nil
-}
+// Shutdown implements sdk/log.Exporter; no handle is held between exports.
+func (e *spoolExporter) Shutdown(context.Context) error { return nil }
 
 // spoolFiles lists the spool's record files in lexical (= chronological)
 // order.
