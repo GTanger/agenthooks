@@ -34,9 +34,11 @@ import (
 
 const maxPayloadBytes = 32 << 20
 
-// Runner holds registered handlers and policy. One handler per unified event
-// kind; OnAny is additive (observe-only) and runs regardless. Typed handlers
-// gate/mutate; OnAny never does.
+// Runner holds registered handlers and policy. Handlers per unified event
+// kind are ordered stages: registration appends, dispatch runs them in order
+// and the first conclusive decision wins (see Any). OnAny is additive
+// (observe-only) and runs regardless. Typed handlers gate/mutate; OnAny
+// never does. Middleware installed with Use wraps the typed pipeline.
 type Runner struct {
 	policy             PolicyFunc
 	logger             *slog.Logger
@@ -45,29 +47,30 @@ type Runner struct {
 	dedupOff           bool
 	mcpResolveOff      bool
 	mcpListOff         bool
+	backfillOff        bool
 	mcpWarmStart       func(string)
 	codexLaunchContext *codexLaunchContext
 	codexMCPWarmStart  func(codexLaunchContext)
-	backfillOff        bool
 	anyHandlers        []func(context.Context, *Event) error
 	otherByName        map[string][]func(context.Context, *Event) error
+	interceptors       []Interceptor
 
-	hSessionStart  func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
-	hSessionEnd    func(context.Context, *SessionEndEvent) error
-	hPrompt        func(context.Context, *PromptEvent) (PromptDecision, error)
-	hToolPre       func(context.Context, *ToolPreEvent) (ToolPreDecision, error)
-	hToolPost      func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
-	hToolError     func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
-	hPermission    func(context.Context, *PermissionEvent) (ToolPreDecision, error)
-	hStop          func(context.Context, *StopEvent) (StopDecision, error)
-	hSubagentStart func(context.Context, *SubagentStartEvent) error
-	hSubagentStop  func(context.Context, *StopEvent) (StopDecision, error)
-	hCompactPre    func(context.Context, *CompactEvent) error
-	hCompactPost   func(context.Context, *CompactEvent) error
-	hNotification  func(context.Context, *NotificationEvent) error
-	hFileEdited    func(context.Context, *FileEditedEvent) error
-	hModelRequest  func(context.Context, *ModelEvent) error
-	hModelResponse func(context.Context, *ModelEvent) error
+	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
+	hSessionEnd    []func(context.Context, *SessionEndEvent) error
+	hPrompt        []func(context.Context, *PromptEvent) (PromptDecision, error)
+	hToolPre       []func(context.Context, *ToolPreEvent) (ToolPreDecision, error)
+	hToolPost      []func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
+	hToolError     []func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
+	hPermission    []func(context.Context, *PermissionEvent) (ToolPreDecision, error)
+	hStop          []func(context.Context, *StopEvent) (StopDecision, error)
+	hSubagentStart []func(context.Context, *SubagentStartEvent) error
+	hSubagentStop  []func(context.Context, *StopEvent) (StopDecision, error)
+	hCompactPre    []func(context.Context, *CompactEvent) error
+	hCompactPost   []func(context.Context, *CompactEvent) error
+	hNotification  []func(context.Context, *NotificationEvent) error
+	hFileEdited    []func(context.Context, *FileEditedEvent) error
+	hModelRequest  []func(context.Context, *ModelEvent) error
+	hModelResponse []func(context.Context, *ModelEvent) error
 }
 
 // Option configures a Runner.
@@ -146,40 +149,60 @@ func New(opts ...Option) *Runner {
 	return r
 }
 
-func (r *Runner) OnSessionStart(fn func(context.Context, *SessionStartEvent) (SessionStartDecision, error)) {
-	r.hSessionStart = fn
+// Registration is variadic and stacks: repeated calls (and multiple
+// arguments) append stages in order, and dispatch runs them with the Any
+// semantics — a neutral decision falls through, the first conclusive
+// decision wins. Compose stages with Any/All/When for richer pipelines;
+// observe-only kinds (session.end, notifications, ...) run every stage.
+
+func (r *Runner) OnSessionStart(hs ...func(context.Context, *SessionStartEvent) (SessionStartDecision, error)) {
+	r.hSessionStart = append(r.hSessionStart, hs...)
 }
-func (r *Runner) OnSessionEnd(fn func(context.Context, *SessionEndEvent) error) { r.hSessionEnd = fn }
-func (r *Runner) OnPromptSubmitted(fn func(context.Context, *PromptEvent) (PromptDecision, error)) {
-	r.hPrompt = fn
+func (r *Runner) OnSessionEnd(hs ...func(context.Context, *SessionEndEvent) error) {
+	r.hSessionEnd = append(r.hSessionEnd, hs...)
 }
-func (r *Runner) OnToolPre(fn func(context.Context, *ToolPreEvent) (ToolPreDecision, error)) {
-	r.hToolPre = fn
+func (r *Runner) OnPromptSubmitted(hs ...func(context.Context, *PromptEvent) (PromptDecision, error)) {
+	r.hPrompt = append(r.hPrompt, hs...)
 }
-func (r *Runner) OnToolPost(fn func(context.Context, *ToolPostEvent) (ToolPostDecision, error)) {
-	r.hToolPost = fn
+func (r *Runner) OnToolPre(hs ...func(context.Context, *ToolPreEvent) (ToolPreDecision, error)) {
+	r.hToolPre = append(r.hToolPre, hs...)
 }
-func (r *Runner) OnToolError(fn func(context.Context, *ToolPostEvent) (ToolPostDecision, error)) {
-	r.hToolError = fn
+func (r *Runner) OnToolPost(hs ...func(context.Context, *ToolPostEvent) (ToolPostDecision, error)) {
+	r.hToolPost = append(r.hToolPost, hs...)
 }
-func (r *Runner) OnPermission(fn func(context.Context, *PermissionEvent) (ToolPreDecision, error)) {
-	r.hPermission = fn
+func (r *Runner) OnToolError(hs ...func(context.Context, *ToolPostEvent) (ToolPostDecision, error)) {
+	r.hToolError = append(r.hToolError, hs...)
 }
-func (r *Runner) OnStop(fn func(context.Context, *StopEvent) (StopDecision, error)) { r.hStop = fn }
-func (r *Runner) OnSubagentStart(fn func(context.Context, *SubagentStartEvent) error) {
-	r.hSubagentStart = fn
+func (r *Runner) OnPermission(hs ...func(context.Context, *PermissionEvent) (ToolPreDecision, error)) {
+	r.hPermission = append(r.hPermission, hs...)
 }
-func (r *Runner) OnSubagentStop(fn func(context.Context, *StopEvent) (StopDecision, error)) {
-	r.hSubagentStop = fn
+func (r *Runner) OnStop(hs ...func(context.Context, *StopEvent) (StopDecision, error)) {
+	r.hStop = append(r.hStop, hs...)
 }
-func (r *Runner) OnCompactPre(fn func(context.Context, *CompactEvent) error)  { r.hCompactPre = fn }
-func (r *Runner) OnCompactPost(fn func(context.Context, *CompactEvent) error) { r.hCompactPost = fn }
-func (r *Runner) OnNotification(fn func(context.Context, *NotificationEvent) error) {
-	r.hNotification = fn
+func (r *Runner) OnSubagentStart(hs ...func(context.Context, *SubagentStartEvent) error) {
+	r.hSubagentStart = append(r.hSubagentStart, hs...)
 }
-func (r *Runner) OnFileEdited(fn func(context.Context, *FileEditedEvent) error) { r.hFileEdited = fn }
-func (r *Runner) OnModelRequest(fn func(context.Context, *ModelEvent) error)    { r.hModelRequest = fn }
-func (r *Runner) OnModelResponse(fn func(context.Context, *ModelEvent) error)   { r.hModelResponse = fn }
+func (r *Runner) OnSubagentStop(hs ...func(context.Context, *StopEvent) (StopDecision, error)) {
+	r.hSubagentStop = append(r.hSubagentStop, hs...)
+}
+func (r *Runner) OnCompactPre(hs ...func(context.Context, *CompactEvent) error) {
+	r.hCompactPre = append(r.hCompactPre, hs...)
+}
+func (r *Runner) OnCompactPost(hs ...func(context.Context, *CompactEvent) error) {
+	r.hCompactPost = append(r.hCompactPost, hs...)
+}
+func (r *Runner) OnNotification(hs ...func(context.Context, *NotificationEvent) error) {
+	r.hNotification = append(r.hNotification, hs...)
+}
+func (r *Runner) OnFileEdited(hs ...func(context.Context, *FileEditedEvent) error) {
+	r.hFileEdited = append(r.hFileEdited, hs...)
+}
+func (r *Runner) OnModelRequest(hs ...func(context.Context, *ModelEvent) error) {
+	r.hModelRequest = append(r.hModelRequest, hs...)
+}
+func (r *Runner) OnModelResponse(hs ...func(context.Context, *ModelEvent) error) {
+	r.hModelResponse = append(r.hModelResponse, hs...)
+}
 
 // OnAny receives EVERY event, mapped or not, with the raw payload — the
 // fidelity escape hatch. Observe-only: errors are logged, never gate.
@@ -409,10 +432,22 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	return wire.ExitCode
 }
 
-// dispatch runs OnAny/OnOther observers then the typed handler, converting
-// panics to errors and enforcing the context deadline even against handlers
-// that ignore ctx.
+// dispatch runs OnAny/OnOther observers then the middleware-wrapped typed
+// pipeline, converting panics to errors and enforcing the context deadline
+// even against handlers that ignore ctx. It is the edge entry point: the
+// winning decision is reduced to its core for the codecs. Decide is the
+// same pipeline without the reduction.
 func (r *Runner) dispatch(ctx context.Context, typed any) (decisionCore, error) {
+	d, err := r.decideGuarded(ctx, typed)
+	if err != nil {
+		return decisionCore{}, err
+	}
+	return coreOfDecision(d), nil
+}
+
+// observe delivers the event to OnAny and OnOther observers. Observe-only:
+// errors are logged, never gate.
+func (r *Runner) observe(ctx context.Context, typed any) {
 	base := eventOf(typed)
 	for _, h := range r.anyHandlers {
 		if err := safeObserve(ctx, h, base); err != nil {
@@ -424,10 +459,15 @@ func (r *Runner) dispatch(ctx context.Context, typed any) (decisionCore, error) 
 			r.logger.Warn("agenthooks: OnOther handler error", "native", base.NativeName, "error", err)
 		}
 	}
+}
 
+// decideGuarded runs the OnAny/OnOther observers, the middleware chain, and
+// the typed handlers under the panic/deadline guard. Observers run inside the
+// guard so a blocking observer that ignores ctx cannot defeat the deadline.
+func (r *Runner) decideGuarded(ctx context.Context, typed any) (Decision, error) {
 	type result struct {
-		core decisionCore
-		err  error
+		d   Decision
+		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
@@ -436,89 +476,71 @@ func (r *Runner) dispatch(ctx context.Context, typed any) (decisionCore, error) 
 				ch <- result{err: fmt.Errorf("agenthooks: handler panic: %v", p)}
 			}
 		}()
-		core, err := r.invoke(ctx, typed)
-		ch <- result{core: core, err: err}
+		r.observe(ctx, typed)
+		d, err := r.runPipeline(ctx, typed)
+		ch <- result{d: d, err: err}
 	}()
 	select {
 	case res := <-ch:
-		return res.core, res.err
+		return res.d, res.err
 	case <-ctx.Done():
-		return decisionCore{}, fmt.Errorf("agenthooks: handler deadline exceeded: %w", ctx.Err())
+		return nil, fmt.Errorf("agenthooks: handler deadline exceeded: %w", ctx.Err())
 	}
 }
 
-func (r *Runner) invoke(ctx context.Context, typed any) (decisionCore, error) {
+// invoke runs the typed-handler stages for the event with the stacked
+// registration semantics (see runStages) and returns the winning decision.
+func (r *Runner) invoke(ctx context.Context, typed any) (Decision, error) {
 	switch ev := typed.(type) {
 	case *ToolPreEvent:
-		if r.hToolPre != nil {
-			d, err := r.hToolPre(ctx, ev)
-			return d.core, err
-		}
+		return liftDecision(runStages(ctx, ev, r.hToolPre))
 	case *PermissionEvent:
-		if r.hPermission != nil {
-			d, err := r.hPermission(ctx, ev)
-			return d.core, err
-		}
+		return liftDecision(runStages(ctx, ev, r.hPermission))
 	case *ToolPostEvent:
-		if ev.Failed && r.hToolError != nil {
-			d, err := r.hToolError(ctx, ev)
-			return d.core, err
+		if ev.Failed && len(r.hToolError) > 0 {
+			return liftDecision(runStages(ctx, ev, r.hToolError))
 		}
-		if r.hToolPost != nil {
-			d, err := r.hToolPost(ctx, ev)
-			return d.core, err
-		}
+		return liftDecision(runStages(ctx, ev, r.hToolPost))
 	case *PromptEvent:
-		if r.hPrompt != nil {
-			d, err := r.hPrompt(ctx, ev)
-			return d.core, err
-		}
+		return liftDecision(runStages(ctx, ev, r.hPrompt))
 	case *StopEvent:
-		if ev.Kind == KindSubagentStop && r.hSubagentStop != nil {
-			d, err := r.hSubagentStop(ctx, ev)
-			return d.core, err
+		if ev.Kind == KindSubagentStop {
+			return liftDecision(runStages(ctx, ev, r.hSubagentStop))
 		}
-		if ev.Kind == KindStop && r.hStop != nil {
-			d, err := r.hStop(ctx, ev)
-			return d.core, err
+		if ev.Kind == KindStop {
+			return liftDecision(runStages(ctx, ev, r.hStop))
 		}
 	case *SessionStartEvent:
-		if r.hSessionStart != nil {
-			d, err := r.hSessionStart(ctx, ev)
-			return d.core, err
-		}
+		return liftDecision(runStages(ctx, ev, r.hSessionStart))
 	case *SessionEndEvent:
-		if r.hSessionEnd != nil {
-			return decisionCore{kind: decObserved}, r.hSessionEnd(ctx, ev)
-		}
+		return observeStages(ctx, ev, r.hSessionEnd)
 	case *SubagentStartEvent:
-		if r.hSubagentStart != nil {
-			return decisionCore{kind: decObserved}, r.hSubagentStart(ctx, ev)
-		}
+		return observeStages(ctx, ev, r.hSubagentStart)
 	case *CompactEvent:
-		if ev.Kind == KindCompactPre && r.hCompactPre != nil {
-			return decisionCore{kind: decObserved}, r.hCompactPre(ctx, ev)
+		if ev.Kind == KindCompactPre {
+			return observeStages(ctx, ev, r.hCompactPre)
 		}
-		if ev.Kind == KindCompactPost && r.hCompactPost != nil {
-			return decisionCore{kind: decObserved}, r.hCompactPost(ctx, ev)
+		if ev.Kind == KindCompactPost {
+			return observeStages(ctx, ev, r.hCompactPost)
 		}
 	case *NotificationEvent:
-		if r.hNotification != nil {
-			return decisionCore{kind: decObserved}, r.hNotification(ctx, ev)
-		}
+		return observeStages(ctx, ev, r.hNotification)
 	case *FileEditedEvent:
-		if r.hFileEdited != nil {
-			return decisionCore{kind: decObserved}, r.hFileEdited(ctx, ev)
-		}
+		return observeStages(ctx, ev, r.hFileEdited)
 	case *ModelEvent:
-		if ev.Kind == KindModelRequest && r.hModelRequest != nil {
-			return decisionCore{kind: decObserved}, r.hModelRequest(ctx, ev)
+		if ev.Kind == KindModelRequest {
+			return observeStages(ctx, ev, r.hModelRequest)
 		}
-		if ev.Kind == KindModelResponse && r.hModelResponse != nil {
-			return decisionCore{kind: decObserved}, r.hModelResponse(ctx, ev)
+		if ev.Kind == KindModelResponse {
+			return observeStages(ctx, ev, r.hModelResponse)
 		}
 	}
-	return decisionCore{kind: decNoDecision}, nil
+	return coreDecision{}, nil
+}
+
+// liftDecision adapts a concrete decision result to the Decision interface.
+func liftDecision[D decision](d D, err error) (Decision, error) {
+	return any(d).(Decision), err
 }
 
 func safeObserve(ctx context.Context, h func(context.Context, *Event) error, e *Event) (err error) {
@@ -538,12 +560,12 @@ func failCore(pol Policy, base *Event) decisionCore {
 	if pol.Fail == FailClosed && Capabilities(base.Provider, base.Variant, base.Kind).Has(CapDeny) {
 		switch base.Kind {
 		case KindToolPre, KindPermission:
-			return decisionCore{kind: decDeny, reason: "agenthooks: hook handler failed (fail-closed policy)"}
+			return decisionCore{kind: DecisionDeny, reason: "agenthooks: hook handler failed (fail-closed policy)"}
 		case KindPromptSubmitted:
-			return decisionCore{kind: decBlockPrompt, reason: "agenthooks: hook handler failed (fail-closed policy)"}
+			return decisionCore{kind: DecisionBlockPrompt, reason: "agenthooks: hook handler failed (fail-closed policy)"}
 		}
 	}
-	return decisionCore{kind: decNoDecision}
+	return decisionCore{kind: DecisionNoDecision}
 }
 
 // applyPolicy degrades (or strictly rejects) decisions the provider can't
@@ -560,7 +582,7 @@ func (r *Runner) applyPolicy(typed any, base *Event, d decisionCore, pol Policy)
 	}
 
 	switch d.kind {
-	case decAsk:
+	case DecisionAsk:
 		askOK := set.Has(CapAsk)
 		if base.Provider == ProviderCursor && askOK {
 			askOK = cursorAskSupported(base.NativeName)
@@ -570,55 +592,55 @@ func (r *Runner) applyPolicy(typed any, base *Event, d decisionCore, pol Policy)
 				return failCore(pol, base)
 			}
 			if pol.AskFallback == FallbackDeny {
-				d.kind = decDeny
+				d.kind = DecisionDeny
 			} else {
-				d.kind = decNoDecision
+				d.kind = DecisionNoDecision
 			}
 		}
-	case decDeny:
+	case DecisionDeny:
 		if !set.Has(CapDeny) {
 			if unsupported("deny") {
 				return failCore(pol, base)
 			}
-			d.kind = decNoDecision
+			d.kind = DecisionNoDecision
 			d.reason = ""
 		}
-	case decBlockPrompt:
+	case DecisionBlockPrompt:
 		if !set.Has(CapDeny) {
 			if unsupported("block-prompt") {
 				return failCore(pol, base)
 			}
-			d.kind = decAcceptPrompt
+			d.kind = DecisionAcceptPrompt
 			d.reason = ""
 		}
-	case decAllow:
+	case DecisionAllow:
 		if !set.Has(CapAllow) {
 			if unsupported("allow") {
 				return failCore(pol, base)
 			}
-			d.kind = decNoDecision
+			d.kind = DecisionNoDecision
 		}
-	case decContinue:
+	case DecisionContinue:
 		if !set.Has(CapContinueAgent) {
 			if unsupported("continue-agent") {
 				return failCore(pol, base)
 			}
-			d.kind = decFinish
+			d.kind = DecisionFinish
 			d.instruction = ""
 		} else if st, ok := typed.(*StopEvent); ok && st.LoopCount >= pol.continuationCap() {
 			r.logger.Warn("agenthooks: continuation cap reached; finishing instead", "loop_count", st.LoopCount, "cap", pol.continuationCap())
-			d.kind = decFinish
+			d.kind = DecisionFinish
 			d.instruction = ""
 		}
-	case decFlagOutput:
+	case DecisionFlagOutput:
 		if !set.Has(CapAddContext) {
 			if unsupported("flag-output") {
 				return failCore(pol, base)
 			}
-			d.kind = decObserved
+			d.kind = DecisionObserved
 			d.reason = ""
 		}
-	case decReplaceOutput:
+	case DecisionReplaceOutput:
 		replaceOK := set.Has(CapReplaceOutput)
 		if base.Provider == ProviderCursor && replaceOK {
 			replaceOK = base.NativeName == "afterMCPExecution" // MCP only (§4.1)
@@ -627,7 +649,7 @@ func (r *Runner) applyPolicy(typed any, base *Event, d decisionCore, pol Policy)
 			if unsupported("replace-output") {
 				return failCore(pol, base)
 			}
-			d.kind = decObserved
+			d.kind = DecisionObserved
 			d.hasReplacedOutput = false
 			d.replacedOutput = nil
 		}
@@ -635,7 +657,7 @@ func (r *Runner) applyPolicy(typed any, base *Event, d decisionCore, pol Policy)
 
 	if d.hasUpdatedInput {
 		updateOK := set.Has(CapUpdateInput)
-		if base.Provider == ProviderCodex && d.kind != decAllow {
+		if base.Provider == ProviderCodex && d.kind != DecisionAllow {
 			updateOK = false // Codex updates are allow-only (§4.1)
 		}
 		if base.Provider == ProviderCursor && base.NativeName != "preToolUse" {

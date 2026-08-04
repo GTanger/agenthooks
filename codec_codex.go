@@ -101,7 +101,7 @@ func decodeCodexNotify(v Variant, conf DetectionConfidence, now time.Time, paylo
 }
 
 func encodeCodex(base *Event, d decisionCore) (wireResponse, error) {
-	if d.kind == decAsk {
+	if d.kind == DecisionAsk {
 		// Must have been degraded by policy before reaching the codec.
 		return wireResponse{}, ErrUnsupportedDecision
 	}

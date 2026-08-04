@@ -107,7 +107,7 @@ func decodeKimi(v Variant, conf DetectionConfidence, now time.Time, payload []by
 }
 
 func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {
-	if d.kind == decAsk {
+	if d.kind == DecisionAsk {
 		// Must have been degraded by policy before reaching the codec.
 		return wireResponse{}, ErrUnsupportedDecision
 	}
@@ -115,9 +115,9 @@ func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {
 	case KindToolPre:
 		var decision string
 		switch d.kind {
-		case decAllow:
+		case DecisionAllow:
 			decision = "allow"
-		case decDeny:
+		case DecisionDeny:
 			decision = "deny"
 		default:
 			return wireResponse{}, nil
@@ -126,7 +126,7 @@ func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {
 			"hookEventName":      base.NativeName,
 			"permissionDecision": decision,
 		}
-		if d.reason != "" || d.kind == decDeny {
+		if d.reason != "" || d.kind == DecisionDeny {
 			hso["permissionDecisionReason"] = d.reason
 		}
 		b, err := json.Marshal(map[string]any{"hookSpecificOutput": hso})
@@ -135,7 +135,7 @@ func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {
 		}
 		return wireResponse{Stdout: b}, nil
 	case KindPromptSubmitted:
-		if d.kind == decBlockPrompt {
+		if d.kind == DecisionBlockPrompt {
 			return wireResponse{Stderr: []byte(d.reason), ExitCode: 2}, nil
 		}
 		// Exit-0 stdout is appended to the model context on UserPromptSubmit
@@ -144,7 +144,7 @@ func encodeKimi(base *Event, d decisionCore) (wireResponse, error) {
 			return wireResponse{Stdout: []byte(ctx)}, nil
 		}
 	case KindStop:
-		if d.kind == decContinue {
+		if d.kind == DecisionContinue {
 			return wireResponse{Stderr: []byte(d.instruction), ExitCode: 2}, nil
 		}
 	}

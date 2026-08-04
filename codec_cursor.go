@@ -204,14 +204,14 @@ func encodeCursor(base *Event, d decisionCore) (wireResponse, error) {
 	switch base.Kind {
 	case KindToolPre, KindPermission:
 		switch d.kind {
-		case decAllow:
+		case DecisionAllow:
 			out["permission"] = "allow"
-		case decDeny:
+		case DecisionDeny:
 			out["permission"] = "deny"
-		case decAsk:
+		case DecisionAsk:
 			out["permission"] = "ask"
 		}
-		if d.kind != decNoDecision {
+		if d.kind != DecisionNoDecision {
 			// Harmless legacy field for the pre-2.0.64 camelCase era (quirk #4).
 			out["continue"] = true
 		}
@@ -225,16 +225,16 @@ func encodeCursor(base *Event, d decisionCore) (wireResponse, error) {
 			out["updated_input"] = d.updatedInput
 		}
 	case KindPromptSubmitted:
-		if d.kind == decBlockPrompt {
+		if d.kind == DecisionBlockPrompt {
 			out["continue"] = false
 			if d.reason != "" {
 				out["user_message"] = d.reason
 			}
-		} else if d.kind != decNoDecision {
+		} else if d.kind != DecisionNoDecision {
 			out["continue"] = true
 		}
 	case KindStop, KindSubagentStop:
-		if d.kind == decContinue {
+		if d.kind == DecisionContinue {
 			out["followup_message"] = d.instruction
 		}
 	case KindToolPost, KindToolError:

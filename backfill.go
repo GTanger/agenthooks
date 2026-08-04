@@ -155,7 +155,7 @@ func (r *Runner) maybeBackfillPrompt(ctx context.Context, base *Event) {
 	if err != nil {
 		r.logger.Warn("agenthooks: handler error on backfilled prompt.submitted (reporting-only, ignored)", "error", err)
 	}
-	if core.kind != decNoDecision && core.kind != decAcceptPrompt {
+	if core.kind != DecisionNoDecision && core.kind != DecisionAcceptPrompt {
 		r.logger.Debug("agenthooks: decision on backfilled prompt.submitted discarded (event is reporting-only)")
 	}
 }

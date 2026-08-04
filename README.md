@@ -79,6 +79,44 @@ func main() {
 }
 ```
 
+## Composing handlers
+
+Registration is variadic and stacks: handlers run in order, a neutral
+decision falls through, and the first conclusive decision wins. Combinators
+turn handlers into handlers, so compositions register exactly like leaves:
+
+```go
+r.OnToolPre(
+	// Gate MCP calls; everything else falls through to the next stage.
+	agenthooks.When(agenthooks.MatchMCP("*"), gateMCP),
+	// Run every check, merge: most restrictive kind wins, contexts append.
+	agenthooks.All(auditCommand, agenthooks.When(agenthooks.MatchCanonical(agenthooks.ToolShell), gateShell)),
+)
+
+// Middleware wraps the typed pipeline, outermost first: transform the
+// normalized projection, short-circuit, or post-process the decision.
+r.Use(func(ctx context.Context, typed any, next agenthooks.Next) (agenthooks.Decision, error) {
+	return next(ctx, typed)
+})
+```
+
+- `Any(hs...)` — first conclusive decision wins, short-circuits (identical to
+  stacked registration).
+- `All(hs...)` — every handler runs; the most restrictive kind wins
+  (deny > ask > allow > neutral), contexts append in order, errors join.
+- `When(m, h)` — guard a handler by tool identity. `Matcher` is a one-method
+  interface; `MatchTools`/`MatchMCP`/`MatchCanonical` wrap `ToolMatcher`, and
+  custom (e.g. CEL-backed) matchers plug in.
+- `Walk(fn)` — introspect the registered stages in dispatch order. Stage
+  names are the reflected function names, so register named funcs or method
+  values where readable Walk output matters.
+
+Embedding the runner outside a hook process (e.g. server-side)?
+`r.Decide(ctx, event)` runs the same pipeline — observers, middleware,
+handlers — and returns the winning `Decision` (readable via `Kind()`,
+`Reason()`, `Context()`, ...) with no wire encoding and no capability
+degradation; stage errors return as errors.
+
 ## Packages
 
 | Package | Purpose |
@@ -119,6 +157,12 @@ Codex trust-hash pre-seeding.
 
 - `NoDecision() != Allow()`: an empty-opinion response defers to the
   provider's own permission flow; it never force-allows.
+- Decisions are readable: `DecisionKind` constants (`DecisionDeny`,
+  `DecisionAsk`, ...) with `String()` for logs, read accessors on every
+  decision type — including `Blocks()`, true exactly when the decision
+  prevents the action (deny, block-prompt), so boundaries never enumerate
+  kinds — and the common `Decision` interface returned by `Runner.Decide`
+  and middleware.
 - Capability degradation is explicit: `Policy.Unsupported` chooses `Degrade`
   (nearest supported intent, logged) or `Strict` (handler error →
   `Policy.Fail`). Check `e.Can(agenthooks.CapAsk)` when you care.
