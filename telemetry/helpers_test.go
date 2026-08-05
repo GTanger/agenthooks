@@ -72,7 +72,7 @@ func readSpool(t *testing.T, dir string) (spoolHeader, []*lpb.LogRecord) {
 	var header spoolHeader
 	var all []*lpb.LogRecord
 	for _, name := range names {
-		tail, ok := readSpoolTail(filepath.Join(dir, name), 0)
+		tail, ok := readSpoolTail(filepath.Join(dir, name), checkpointEntry{})
 		if !ok {
 			t.Fatalf("unreadable spool file %s", name)
 		}

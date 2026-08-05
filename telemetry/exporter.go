@@ -3,6 +3,8 @@ package telemetry
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -313,7 +315,12 @@ func RunExporter(ctx context.Context, cfg ExporterConfig) error {
 	}
 	logger.Info("agenthooks telemetry exporter running", "spool_dir", dir, "endpoint", endpoint)
 
+	// Sweeps prune-and-persist the checkpoint immediately: a sweep-deleted
+	// file must not leave a stale entry behind that a recreated file of the
+	// same name could inherit.
 	sweepSpool(dir, time.Now(), "")
+	e.cp.prune(dir)
+	e.cp.persist(logger)
 	lastSweep := time.Now()
 	backoff := time.Duration(0)
 	for {
@@ -334,6 +341,7 @@ func RunExporter(ctx context.Context, cfg ExporterConfig) error {
 		if time.Since(lastSweep) > sweepEvery {
 			sweepSpool(dir, time.Now(), "")
 			e.cp.prune(dir)
+			e.cp.persist(logger)
 			lastSweep = time.Now()
 		}
 		wait := interval
@@ -430,7 +438,7 @@ func (e *exporter) processFile(ctx context.Context, name string) error {
 	if err != nil {
 		return nil //nolint:nilerr // vanished (sweep or racing cleanup): nothing to ship
 	}
-	tail, ok := readSpoolTail(path, e.cp.offset(name))
+	tail, ok := readSpoolTail(path, e.cp.entry(name))
 	if !ok {
 		return nil // unreadable or header still being written: next tick
 	}
@@ -448,7 +456,7 @@ func (e *exporter) processFile(ctx context.Context, name string) error {
 	// read (a writer may have appended — the next tick tails it), and the
 	// file is quiescent. A torn tail that sat unchanged past tornTailAfter
 	// is a dead writer's crash artifact: unparseable, never completing.
-	fullyShipped := !tail.torn && e.cp.offset(name) >= tail.size
+	fullyShipped := !tail.torn && e.cp.entry(name).Offset >= tail.size
 	deadTorn := tail.torn && time.Since(before.ModTime()) > tornTailAfter
 	if !fullyShipped && !deadTorn {
 		return nil
@@ -468,6 +476,13 @@ func (e *exporter) processFile(ctx context.Context, name string) error {
 	e.cp.persist(e.logger)
 	_ = os.Remove(path) // Windows sharing violation: the next tick retries
 	return nil
+}
+
+// checkpointFor builds the checkpoint entry for a shipped spool entry: the
+// resume offset plus the fingerprint (length and hash of the line ending at
+// that offset) that guards against file-generation reuse.
+func checkpointFor(entry spoolEntry) checkpointEntry {
+	return checkpointEntry{Offset: entry.end, LineLen: entry.lineLen, LineSHA: entry.lineSHA}
 }
 
 // shipEntries replays the tail's records through a per-file SDK pipeline —
@@ -501,7 +516,7 @@ func (e *exporter) shipEntries(ctx context.Context, name string, tail spoolTail)
 		if err := provider.ForceFlush(ctx); err != nil {
 			return fmt.Errorf("shipping %s: %w", name, err)
 		}
-		e.cp.set(name, chunk[len(chunk)-1].end)
+		e.cp.set(name, checkpointFor(chunk[len(chunk)-1]))
 		e.cp.persist(e.logger)
 	}
 	return nil
@@ -525,17 +540,19 @@ type spoolTail struct {
 }
 
 type spoolEntry struct {
-	rec *lpb.LogRecord
-	end int64 // absolute offset of the first byte after this record's line
+	rec     *lpb.LogRecord
+	end     int64  // absolute offset of the first byte after this record's line
+	lineLen int    // byte length of this record's line (newline included)
+	lineSHA string // hex SHA-256 of this record's line — the checkpoint fingerprint
 }
 
-// readSpoolTail reads a spool file's content from the given offset. Only
+// readSpoolTail reads a spool file's content from the given checkpoint. Only
 // newline-terminated lines are returned — an unterminated tail is an append
 // in progress (or a crash artifact) and is never shipped, so no age
 // heuristics are needed to tail a growing file. Terminated lines that fail
 // to parse are skipped and the offset advances past them. ok is false when
 // the file or its header line is missing or unreadable.
-func readSpoolTail(path string, from int64) (spoolTail, bool) {
+func readSpoolTail(path string, from checkpointEntry) (spoolTail, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return spoolTail{}, false
@@ -556,18 +573,24 @@ func readSpoolTail(path string, from int64) (spoolTail, bool) {
 		return spoolTail{}, false
 	}
 	pos := int64(len(headerLine))
-	if from > pos {
-		if from > tail.size {
-			// Smaller than the checkpoint says: the file was replaced
-			// after a checkpointed generation. Start over (re-ship is
-			// harmless; skipping would lose records).
-			from = pos
+	if off := from.Offset; off > pos {
+		// The checkpoint offset only applies if this is still the same file
+		// generation it was taken against. A sweep (exporter- or
+		// recorder-side) can delete a file while its writer lives; the
+		// writer then recreates the same name, and a stale offset would
+		// silently skip the new generation's records. The fingerprint —
+		// length and hash of the last shipped line — detects that: on any
+		// mismatch the file re-ships from the top (at-least-once, harmless).
+		if off > tail.size || !fingerprintMatches(f, from) {
+			off = pos
 		}
-		if _, err := f.Seek(from, io.SeekStart); err != nil {
-			return spoolTail{}, false
+		if off > pos {
+			if _, err := f.Seek(off, io.SeekStart); err != nil {
+				return spoolTail{}, false
+			}
+			br.Reset(f)
+			pos = off
 		}
-		br.Reset(f)
-		pos = from
 	}
 
 	for {
@@ -587,25 +610,53 @@ func readSpoolTail(path string, from int64) (spoolTail, bool) {
 		if err := protojson.Unmarshal(sl.Record, &pr); err != nil {
 			continue
 		}
-		tail.entries = append(tail.entries, spoolEntry{rec: &pr, end: pos})
+		sum := sha256.Sum256(line)
+		tail.entries = append(tail.entries, spoolEntry{
+			rec: &pr, end: pos, lineLen: len(line), lineSHA: hex.EncodeToString(sum[:]),
+		})
 	}
 }
 
-// checkpointState is the exporter's persisted tail state: file name → byte
-// offset of the first unshipped byte. Persisted via write-temp-then-rename;
-// a lost or corrupt checkpoint only causes re-shipping (at-least-once).
+// fingerprintMatches re-reads the line the checkpoint was taken at and
+// compares it to the stored fingerprint. Checkpoints without a fingerprint
+// never match: re-shipping is the safe direction.
+func fingerprintMatches(f *os.File, from checkpointEntry) bool {
+	if from.LineLen <= 0 || from.LineSHA == "" || int64(from.LineLen) > from.Offset {
+		return false
+	}
+	buf := make([]byte, from.LineLen)
+	if _, err := f.ReadAt(buf, from.Offset-int64(from.LineLen)); err != nil {
+		return false
+	}
+	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:]) == from.LineSHA
+}
+
+// checkpointEntry is one file's persisted tail state: the byte offset of the
+// first unshipped byte, plus a fingerprint (length and hex SHA-256) of the
+// line the offset was taken at, so a recreated file that reuses the name is
+// detected and re-shipped from the top rather than skipped.
+type checkpointEntry struct {
+	Offset  int64  `json:"offset"`
+	LineLen int    `json:"line_len,omitempty"`
+	LineSHA string `json:"line_sha,omitempty"`
+}
+
+// checkpointState is the exporter's persisted tail state, file name → entry.
+// Persisted via write-temp-then-rename; a lost or corrupt checkpoint only
+// causes re-shipping (at-least-once).
 type checkpointState struct {
 	path  string
-	files map[string]int64
+	files map[string]checkpointEntry
 }
 
 type checkpointDoc struct {
-	V     int              `json:"v"`
-	Files map[string]int64 `json:"files"`
+	V     int                        `json:"v"`
+	Files map[string]checkpointEntry `json:"files"`
 }
 
 func loadCheckpoint(path string) *checkpointState {
-	cp := &checkpointState{path: path, files: map[string]int64{}}
+	cp := &checkpointState{path: path, files: map[string]checkpointEntry{}}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cp
@@ -620,9 +671,9 @@ func loadCheckpoint(path string) *checkpointState {
 	return cp
 }
 
-func (c *checkpointState) offset(name string) int64 { return c.files[name] }
+func (c *checkpointState) entry(name string) checkpointEntry { return c.files[name] }
 
-func (c *checkpointState) set(name string, off int64) { c.files[name] = off }
+func (c *checkpointState) set(name string, e checkpointEntry) { c.files[name] = e }
 
 func (c *checkpointState) remove(name string) { delete(c.files, name) }
 

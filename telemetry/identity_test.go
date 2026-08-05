@@ -96,12 +96,19 @@ func TestParseTraceparent(t *testing.T) {
 	if !ok || traceID.String() != "4bf92f3577b34da6a3ce929d0e0e4736" || flags != 0x01 {
 		t.Errorf("valid traceparent: trace=%s flags=%v ok=%v", traceID, flags, ok)
 	}
+	// A valid future version is accepted per W3C forward compatibility.
+	if _, _, ok := parseTraceparent("cc-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"); !ok {
+		t.Errorf("future version cc must parse")
+	}
 	for _, bad := range []string{
 		"",
 		"not-a-traceparent",
 		"00-00000000000000000000000000000000-00f067aa0ba902b7-01", // all-zero trace id
 		"00-4bf92f3577b34da6a3ce929d0e0e4736-zzzz67aa0ba902b7-01", // bad span hex
 		"ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // reserved version
+		"FF-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // reserved version, uppercase
+		"zz-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", // non-hex version
+		"0-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",  // short version
 		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",    // missing flags
 	} {
 		if _, _, ok := parseTraceparent(bad); ok {

@@ -65,7 +65,7 @@ func traceIDFrom(key string) trace.TraceID {
 // record keeps its own deterministic span identity (§4.4).
 func parseTraceparent(v string) (trace.TraceID, trace.TraceFlags, bool) {
 	parts := strings.Split(strings.TrimSpace(v), "-")
-	if len(parts) < 4 || len(parts[0]) != 2 || parts[0] == "ff" {
+	if len(parts) < 4 || !isHexByte(parts[0]) || strings.EqualFold(parts[0], "ff") {
 		return trace.TraceID{}, 0, false
 	}
 	traceID, err := trace.TraceIDFromHex(strings.ToLower(parts[1]))
@@ -80,6 +80,16 @@ func parseTraceparent(v string) (trace.TraceID, trace.TraceFlags, bool) {
 		return trace.TraceID{}, 0, false
 	}
 	return traceID, trace.TraceFlags(flags), true
+}
+
+// isHexByte reports whether s is exactly two hex digits (a traceparent
+// version field).
+func isHexByte(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	_, err := strconv.ParseUint(s, 16, 8)
+	return err == nil
 }
 
 // deriveSpanID is deterministic per event: the first 8 bytes of the SHA-256

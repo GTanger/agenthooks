@@ -273,6 +273,78 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 }
 
+// TestReadSpoolTailDetectsGenerationReuse: a sweep can delete a spool file
+// while its writer lives, and the writer then recreates the same name. A
+// checkpoint taken against the old generation must not apply — its
+// fingerprint mismatches and the new generation re-ships from the top.
+func TestReadSpoolTailDetectsGenerationReuse(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(Config{Endpoint: "http://127.0.0.1:9/v1/logs", SpoolDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.RecordHook(toolPreRecord()); err != nil {
+		t.Fatal(err)
+	}
+	name := spoolFiles(dir)[0]
+	path := filepath.Join(dir, name)
+	tail, ok := readSpoolTail(path, checkpointEntry{})
+	if !ok || len(tail.entries) != 1 {
+		t.Fatalf("first generation: ok=%v entries=%d", ok, len(tail.entries))
+	}
+	cp := checkpointFor(tail.entries[0])
+
+	// Same generation: the fingerprint matches and nothing re-ships.
+	again, ok := readSpoolTail(path, cp)
+	if !ok || len(again.entries) != 0 {
+		t.Fatalf("same generation must yield no new entries, got %d", len(again.entries))
+	}
+
+	// New generation under the same name: same header, different records,
+	// grown past the stale offset.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := raw[:len(raw)-tail.entries[0].lineLen]
+	other := toolPreRecord()
+	other.Kind, other.NativeName = "tool.post", "PostToolUse"
+	dir2 := t.TempDir()
+	rec2, err := New(Config{Endpoint: "http://127.0.0.1:9/v1/logs", SpoolDir: dir2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rec2.RecordHook(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec2.RecordHook(other); err != nil {
+		t.Fatal(err)
+	}
+	raw2, err := os.ReadFile(filepath.Join(dir2, spoolFiles(dir2)[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := 0
+	for i, c := range raw2 {
+		if c == '\n' {
+			idx = i + 1
+			break
+		}
+	}
+	lines2 := raw2[idx:] // dir2's record lines, without its header line
+	if err := os.WriteFile(path, append(append([]byte{}, header...), lines2...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reread, ok := readSpoolTail(path, cp)
+	if !ok {
+		t.Fatalf("new generation unreadable")
+	}
+	if len(reread.entries) != 2 {
+		t.Fatalf("stale checkpoint must be discarded for a new generation: got %d entries, want 2", len(reread.entries))
+	}
+}
+
 func TestExporterResumesFromCheckpointAcrossRestarts(t *testing.T) {
 	srv := newOTLPServer(t, nil)
 	dir := t.TempDir()

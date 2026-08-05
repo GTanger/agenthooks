@@ -2,6 +2,7 @@ package agenthooks
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	collpb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	cpb "go.opentelemetry.io/proto/otlp/common/v1"
 	lpb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/speakeasy-api/agenthooks/telemetry"
 )
@@ -234,9 +237,9 @@ func TestExporterVerbRejectsBadFlags(t *testing.T) {
 // a record, then `agenthooks exporter` (config inherited from the recorder)
 // ships it and shuts down cleanly on context cancellation.
 func TestExporterVerbShipsSpool(t *testing.T) {
-	requests := make(chan struct{}, 16)
+	requests := make(chan *collpb.ExportLogsServiceRequest, 16)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests <- struct{}{}
+		requests <- decodeOTLPLogs(t, r)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -266,7 +269,8 @@ func TestExporterVerbShipsSpool(t *testing.T) {
 			strings.NewReader(""), io.Discard, &errb)
 	}()
 	select {
-	case <-requests:
+	case req := <-requests:
+		assertShippedPreToolUse(t, req)
 	case <-time.After(15 * time.Second):
 		t.Fatalf("exporter never delivered; stderr: %s", errb.String())
 	}
@@ -278,6 +282,53 @@ func TestExporterVerbShipsSpool(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("exporter did not shut down on cancellation")
+	}
+}
+
+// decodeOTLPLogs decodes the OTLP/HTTP protobuf body of an export request
+// (gzip per the exporter's compression setting).
+func decodeOTLPLogs(t *testing.T, r *http.Request) *collpb.ExportLogsServiceRequest {
+	t.Helper()
+	var body io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Errorf("gzip reader: %v", err)
+			return &collpb.ExportLogsServiceRequest{}
+		}
+		defer gz.Close()
+		body = gz
+	}
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		t.Errorf("reading export body: %v", err)
+		return &collpb.ExportLogsServiceRequest{}
+	}
+	var req collpb.ExportLogsServiceRequest
+	if err := proto.Unmarshal(raw, &req); err != nil {
+		t.Errorf("decoding export body: %v", err)
+	}
+	return &req
+}
+
+// assertShippedPreToolUse checks the exported payload is the spooled hook
+// record — the right event, not just any bytes on the endpoint.
+func assertShippedPreToolUse(t *testing.T, req *collpb.ExportLogsServiceRequest) {
+	t.Helper()
+	var events []string
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				for _, kv := range lr.GetAttributes() {
+					if kv.GetKey() == "gram.hook.event" {
+						events = append(events, kv.GetValue().GetStringValue())
+					}
+				}
+			}
+		}
+	}
+	if len(events) != 1 || events[0] != "PreToolUse" {
+		t.Errorf("shipped gram.hook.event values = %v, want [PreToolUse]", events)
 	}
 }
 
