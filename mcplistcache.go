@@ -217,9 +217,20 @@ func writeMCPListCache(path string, cached mcpListCache) {
 }
 
 func runClaudeMCPList(parent context.Context, launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
-	bin, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, false
+	// Prefer the binary that launched this session over a PATH search: hooks
+	// inherit the session's environment, and a desktop- or MDM-launched
+	// Claude frequently passes one without the CLI on it. Same order as
+	// runCodexMCPList.
+	bin := launch.Executable
+	if bin == "" {
+		bin = "claude"
+	}
+	if !filepath.IsAbs(bin) {
+		var err error
+		bin, err = exec.LookPath(bin)
+		if err != nil {
+			return nil, false
+		}
 	}
 	ctx, cancel := context.WithTimeout(parent, mcpListProbeTimeout)
 	defer cancel()
