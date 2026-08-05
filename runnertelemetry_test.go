@@ -296,7 +296,7 @@ func decodeOTLPLogs(t *testing.T, r *http.Request) *collpb.ExportLogsServiceRequ
 			t.Errorf("gzip reader: %v", err)
 			return &collpb.ExportLogsServiceRequest{}
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		body = gz
 	}
 	raw, err := io.ReadAll(body)
