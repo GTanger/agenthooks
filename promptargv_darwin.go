@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -51,18 +53,31 @@ func procArgs(pid int) ([]string, error) {
 }
 
 func procExecutable(pid int) (string, error) {
-	raw, err := unix.SysctlRaw("kern.procargs2", pid)
-	if err != nil {
-		return "", err
+	const (
+		procInfoCallPIDInfo = 2
+		procPIDPathInfo     = 11
+		maxPathLen          = 1024
+	)
+	buf := make([]byte, maxPathLen)
+	ret, _, errno := syscall.Syscall6(
+		syscall.SYS___PROC_INFO,
+		procInfoCallPIDInfo,
+		uintptr(pid),
+		procPIDPathInfo,
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+	if errno != 0 {
+		return "", errno
 	}
-	if len(raw) < 4 {
-		return "", fmt.Errorf("agenthooks: short procargs2 for pid %d", pid)
+	if ret == 0 {
+		return "", fmt.Errorf("agenthooks: proc_pidpath failed for pid %d", pid)
 	}
-	rest := raw[4:]
-	if i := bytes.IndexByte(rest, 0); i >= 0 {
-		return string(rest[:i]), nil
+	if i := bytes.IndexByte(buf, 0); i >= 0 {
+		return string(buf[:i]), nil
 	}
-	return "", fmt.Errorf("agenthooks: malformed procargs2 for pid %d", pid)
+	return string(buf), nil
 }
 
 // procPPID reads the parent pid from the process's kinfo_proc.

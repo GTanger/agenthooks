@@ -41,9 +41,6 @@ func TestMain(m *testing.M) {
 	case "fake-claude":
 		fakeClaudeMain()
 		os.Exit(0)
-	case "claude-launch":
-		_, _ = io.Copy(io.Discard, os.Stdin)
-		os.Exit(0)
 	case "agenthooks-main":
 		if path := os.Getenv("AGENTHOOKS_TEST_MAIN_READY"); path != "" {
 			_ = os.WriteFile(path, []byte("ready"), 0o600)
