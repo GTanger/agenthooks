@@ -703,7 +703,7 @@ func replayRecord(pr *lpb.LogRecord, now time.Time) (log.Record, trace.SpanConte
 	if sid := pr.GetSpanId(); len(sid) == 8 {
 		copy(scc.SpanID[:], sid)
 	}
-	scc.TraceFlags = trace.TraceFlags(pr.GetFlags()) //nolint:gosec // low byte only
+	scc.TraceFlags = trace.TraceFlags(byte(pr.GetFlags() & 0xFF)) // W3C flags ride the low byte
 	return rec, trace.NewSpanContext(scc)
 }
 
