@@ -313,6 +313,14 @@ func TestTelemetryTapPanicIsContained(t *testing.T) {
 	}
 }
 
+func TestWithTelemetryTypedNilRecorderIsNoOp(t *testing.T) {
+	var rec *telemetry.Recorder
+	r := quietRunner(WithTelemetry(rec))
+	if r.afterEvent != nil || r.telemetryExporter != nil {
+		t.Errorf("typed-nil recorder must not install the tap or the exporter")
+	}
+}
+
 func TestExporterVerbWithoutRecorder(t *testing.T) {
 	r := quietRunner()
 	var out, errb strings.Builder

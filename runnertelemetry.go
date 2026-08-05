@@ -3,6 +3,7 @@ package agenthooks
 import (
 	"context"
 	"io"
+	"reflect"
 	"time"
 
 	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
@@ -64,6 +65,12 @@ type TelemetryRecorder interface {
 func WithTelemetry(rec TelemetryRecorder) Option {
 	return func(r *Runner) {
 		if rec == nil {
+			return
+		}
+		// A typed-nil recorder (a nil *telemetry.Recorder from a New whose
+		// error went unchecked) makes the interface non-nil; treat it as
+		// absent rather than installing a tap that can only fail.
+		if v := reflect.ValueOf(rec); v.Kind() == reflect.Pointer && v.IsNil() {
 			return
 		}
 		r.telemetryExporter = rec.ExporterMain

@@ -910,7 +910,7 @@ that derivation in the cutover.
 1. **Recognize agenthooks payloads.** `Service.Logs` currently branches
    Claude vs Codex (`isCodexLogsPayload`, `otel.go:49-54`) and applies
    Claude-specific surface resolution. Add a branch keyed on the resource
-   attr `event.origin=agenthooks` (or `service.name`): skip the
+   attr `gram.event.origin=agenthooks` (or `service.name`): skip the
    Claude-surface machinery (the records carry `gram.hook.source` already,
    §4.3), reuse the generic normalization + attribution + bulk write, and
    stamp a new writer URN constant (e.g. `agenthooks:otel:logs`) alongside
