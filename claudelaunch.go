@@ -46,8 +46,12 @@ func currentClaudeLaunchContext(cwd string) claudeLaunchContext {
 		return c
 	}
 	c = parseClaudeLaunchArgs(args, projectDir)
-	// argv[0] can be a bare name or a relative path; the kernel's own answer
-	// is absolute and survives a working-directory change.
+	// Prefer the kernel's record over argv[0], which a launcher is free to set
+	// to anything. It is absolute on Linux (/proc/pid/exe) and Windows
+	// (QueryFullProcessImageName); on macOS it is the exec path, absolute
+	// whenever the launcher resolved one (as a PATH lookup does). Anything not
+	// absolute falls back to the PATH search in runClaudeMCPList — no worse
+	// than resolving off PATH alone, which is all this had before.
 	if executable, err := procExecutable(pid); err == nil && executable != "" {
 		c.Executable = executable
 	}
