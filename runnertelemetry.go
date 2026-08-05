@@ -16,14 +16,15 @@ type recordTiming struct {
 	duration time.Duration
 }
 
-// afterDecision is the internal post-decision hook invoked by Runner.Run
-// after applyPolicy and wire encoding, and by the OpenCode serve loop after
-// the reply is encoded. Unlike OnAny observers — which run before the
-// decision pipeline — it sees the final applied decision, the timing, the
-// handler error, and where the decision came from ("handler", "policy" when
-// the runner's failure policy substituted it, "backfill" for synthesized
-// reporting-only events). WithTelemetry installs one.
-type afterDecision func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string)
+// afterEvent is the internal end-of-processing hook invoked by Runner.Run
+// after the response is encoded, and by the OpenCode serve loop after the
+// reply is encoded. Unlike OnAny observers — which run before the handler
+// pipeline — it sees the full processing timing and any handler error. It
+// deliberately does not see the decision: telemetry records are purely
+// observational (the enforcement rail owns decision logging), so the tap
+// carries the event, the timing, and the error signal — nothing about the
+// verdict. WithTelemetry installs one.
+type afterEvent func(typed any, base *Event, timing recordTiming, herr error)
 
 // TelemetryRecorder is the runner-facing surface of a telemetry recorder;
 // *telemetry.Recorder implements it. It exists so this root package does not
@@ -33,7 +34,7 @@ type afterDecision func(typed any, base *Event, core decisionCore, timing record
 // internal type on purpose, which keeps the recorder tap callable by the
 // runner but not implementable or invokable by external consumers.
 type TelemetryRecorder interface {
-	// RecordHook captures one post-decision hook event into the local spool.
+	// RecordHook captures one hook event into the local spool.
 	RecordHook(hr *hookrecord.Record) error
 	// ExporterMain runs the long-lived telemetry exporter daemon behind the
 	// `agenthooks exporter` verb: it resolves config (recorder config, then
@@ -44,12 +45,15 @@ type TelemetryRecorder interface {
 
 // WithTelemetry installs rec as the runner's telemetry recorder: one OTel
 // log record per hook event, appended to the local disk spool after the
-// decision is on the wire. The hook process never ships and never spawns —
-// delivery belongs to the exporter daemon (`mybinary agenthooks exporter`),
-// which is started and supervised externally. Opt-in and fail-open by
-// construction — without the option nothing changes; with it, a recorder
-// failure degrades to a logged warning, never an error on the pipeline. See
-// the telemetry package for configuration:
+// response is on the wire. Records are observational — they describe the
+// event and the hook rail's own health (timing, errors), never the
+// enforcement decision, which is logged by the enforcement backend at
+// decision time. The hook process never ships and never spawns — delivery
+// belongs to the exporter daemon (`mybinary agenthooks exporter`), which is
+// started and supervised externally. Opt-in and fail-open by construction —
+// without the option nothing changes; with it, a recorder failure degrades
+// to a logged warning, never an error on the pipeline. See the telemetry
+// package for configuration:
 //
 //	rec, err := telemetry.New(telemetry.Config{Endpoint: ...})
 //	if err != nil { ... }
@@ -63,23 +67,23 @@ func WithTelemetry(rec TelemetryRecorder) Option {
 			return
 		}
 		r.telemetryExporter = rec.ExporterMain
-		r.afterDecision = func(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) {
-			if err := rec.RecordHook(buildHookRecord(typed, base, core, timing, herr, source)); err != nil {
+		r.afterEvent = func(typed any, base *Event, timing recordTiming, herr error) {
+			if err := rec.RecordHook(buildHookRecord(typed, base, timing, herr)); err != nil {
 				r.logger.Warn("agenthooks: telemetry record failed", "error", err)
 			}
 		}
 	}
 }
 
-// tapAfterDecision delivers the post-decision snapshot to the telemetry
+// tapAfterEvent delivers the end-of-processing snapshot to the telemetry
 // recorder. encodedAt is sampled at the encoding boundary so the duration
 // measures dispatch-to-response-encoded, not the provider write. Fail-open,
 // always: the tap runs after the response is written, is panic-guarded like
 // observers, and its work is bounded I/O with no network — recorder errors
 // log a warning and never change a decision, delay a response, or surface
 // as a hook failure.
-func (r *Runner) tapAfterDecision(typed any, base *Event, core decisionCore, herr error, encodedAt time.Time, source string) {
-	if r.afterDecision == nil {
+func (r *Runner) tapAfterEvent(typed any, base *Event, herr error, encodedAt time.Time) {
+	if r.afterEvent == nil {
 		return
 	}
 	defer func() {
@@ -88,12 +92,12 @@ func (r *Runner) tapAfterDecision(typed any, base *Event, core decisionCore, her
 		}
 	}()
 	timing := recordTiming{receive: base.Time, duration: encodedAt.Sub(base.Time)}
-	r.afterDecision(typed, base, core, timing, herr, source)
+	r.afterEvent(typed, base, timing, herr)
 }
 
-// buildHookRecord projects the typed event plus the final decision into the
-// flat record the telemetry package consumes.
-func buildHookRecord(typed any, base *Event, core decisionCore, timing recordTiming, herr error, source string) *hookrecord.Record {
+// buildHookRecord projects the typed event into the flat record the
+// telemetry package consumes.
+func buildHookRecord(typed any, base *Event, timing recordTiming, herr error) *hookrecord.Record {
 	hr := &hookrecord.Record{
 		Provider:       string(base.Provider),
 		Variant:        string(base.Variant),
@@ -107,12 +111,6 @@ func buildHookRecord(typed any, base *Event, core decisionCore, timing recordTim
 		Model:          base.Session.Model,
 		UserEmail:      base.Session.UserEmail,
 		HookDurationMS: float64(timing.duration) / float64(time.Millisecond),
-		Decision: hookrecord.Decision{
-			Kind:     core.kind.String(),
-			Reason:   core.reason,
-			Blocking: core.blocks(),
-			Source:   source,
-		},
 	}
 	if herr != nil {
 		hr.HandlerErr = herr.Error()

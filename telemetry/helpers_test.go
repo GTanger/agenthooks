@@ -32,7 +32,7 @@ func newTestRecorder(t *testing.T, mutate func(*Config)) *Recorder {
 var testReceiveTime = time.Unix(1700000000, 123456789)
 
 // toolPreRecord is a fully-populated tool.pre snapshot: MCP transport,
-// final deny decision, timing.
+// timing.
 func toolPreRecord() *hookrecord.Record {
 	return &hookrecord.Record{
 		Provider:   "claude-code",
@@ -56,7 +56,6 @@ func toolPreRecord() *hookrecord.Record {
 				Command: "npx mcp-github --token=ghp_1234567890abcdef",
 			},
 		},
-		Decision:       hookrecord.Decision{Kind: "deny", Reason: "blocked by policy", Blocking: true, Source: "handler"},
 		HookDurationMS: 12.5,
 	}
 }

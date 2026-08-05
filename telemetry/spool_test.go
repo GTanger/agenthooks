@@ -59,8 +59,8 @@ func TestSpoolRoundTrip(t *testing.T) {
 	if pr.GetEventName() != "tool.pre" {
 		t.Errorf("event name = %q, want tool.pre", pr.GetEventName())
 	}
-	if pr.GetSeverityText() != "ERROR" {
-		t.Errorf("severity for a deny = %q, want ERROR", pr.GetSeverityText())
+	if pr.GetSeverityText() != "INFO" {
+		t.Errorf("severity for a healthy event = %q, want INFO", pr.GetSeverityText())
 	}
 	if body := pr.GetBody().GetStringValue(); body != "Hook: PreToolUse" {
 		t.Errorf("body = %q, want %q", body, "Hook: PreToolUse")
@@ -76,29 +76,35 @@ func TestSpoolRoundTrip(t *testing.T) {
 
 	attrs := attrMap(pr)
 	for key, want := range map[string]any{
-		"gram.hook.event":              "PreToolUse",
-		"gram.hook.source":             "claude-code",
-		"event.name":                   "tool.pre",
-		"gram.event.origin":            "agenthooks",
-		"agenthooks.provider":          "claude-code",
-		"agenthooks.variant":           "cli",
-		"session.id":                   "sess-123",
-		"agenthooks.turn.id":           "turn-7",
-		"gen_ai.response.model":        "claude-sonnet-4-5",
-		"gen_ai.tool.call.id":          "toolu_01SsRreQbJuFTsZS9ZszkzNR",
-		"gram.tool.name":               "mcp__github__create_issue",
-		"gen_ai.tool.name":             "mcp__github__create_issue",
-		"agenthooks.tool.canonical":    "mcp",
-		"gram.hook.decision":           "deny",
-		"agenthooks.decision.reason":   "blocked by policy",
-		"agenthooks.decision.blocking": true,
-		"agenthooks.decision.source":   "handler",
-		"agenthooks.hook.duration_ms":  12.5,
-		"agenthooks.mcp.server":        "github",
-		"agenthooks.mcp.tool":          "create_issue",
+		"gram.hook.event":             "PreToolUse",
+		"gram.hook.source":            "claude-code",
+		"event.name":                  "tool.pre",
+		"gram.event.origin":           "agenthooks",
+		"agenthooks.provider":         "claude-code",
+		"agenthooks.variant":          "cli",
+		"session.id":                  "sess-123",
+		"agenthooks.turn.id":          "turn-7",
+		"gen_ai.response.model":       "claude-sonnet-4-5",
+		"gen_ai.tool.call.id":         "toolu_01SsRreQbJuFTsZS9ZszkzNR",
+		"gram.tool.name":              "mcp__github__create_issue",
+		"gen_ai.tool.name":            "mcp__github__create_issue",
+		"agenthooks.tool.canonical":   "mcp",
+		"agenthooks.hook.duration_ms": 12.5,
+		"agenthooks.mcp.server":       "github",
+		"agenthooks.mcp.tool":         "create_issue",
 	} {
 		if attrs[key] != want {
 			t.Errorf("attr %s = %v, want %v", key, attrs[key], want)
+		}
+	}
+	// Records are observational: no decision attributes, ever (the
+	// enforcement backend's decision-time log is the sole decision record).
+	for _, key := range []string{
+		"gram.hook.decision", "agenthooks.decision.reason",
+		"agenthooks.decision.blocking", "agenthooks.decision.source",
+	} {
+		if _, ok := attrs[key]; ok {
+			t.Errorf("decision attribute %s must not be emitted", key)
 		}
 	}
 	// Default capture: digests stand in for tool input; no content keys.
@@ -142,7 +148,7 @@ func TestSpoolRoundTrip(t *testing.T) {
 		got[string(kv.Key)] = kv.Value.AsInterface()
 		return true
 	})
-	if got["gram.hook.decision"] != "deny" || got["session.id"] != "sess-123" {
+	if got["gram.tool.name"] != "mcp__github__create_issue" || got["session.id"] != "sess-123" {
 		t.Errorf("replayed attributes lost: %v", got)
 	}
 }

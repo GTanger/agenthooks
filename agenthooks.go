@@ -54,7 +54,7 @@ type Runner struct {
 	anyHandlers        []func(context.Context, *Event) error
 	otherByName        map[string][]func(context.Context, *Event) error
 	interceptors       []Interceptor
-	afterDecision      afterDecision
+	afterEvent         afterEvent
 	telemetryExporter  func(ctx context.Context, args []string, stderr io.Writer) int
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
@@ -410,11 +410,9 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 
 	core, herr := r.dispatch(hctx, typed)
-	decisionSource := "handler"
 	if herr != nil {
 		r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", herr)
 		core = failCore(pol, base)
-		decisionSource = "policy"
 	}
 	core = r.applyPolicy(typed, base, core, pol)
 
@@ -429,7 +427,6 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		if encErr != nil {
 			r.logger.Error("agenthooks: encode failed", "error", encErr)
 			core = failCore(pol, base)
-			decisionSource = "policy"
 			wire, encErr = encodeDecision(typed, core)
 			if encErr != nil {
 				wire = noOpResponse(provider)
@@ -445,9 +442,10 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		// (quirk #23); other dialects never populate Stderr.
 		_, _ = stderr.Write(wire.Stderr)
 	}
-	// Telemetry taps in after the response is on the wire: it sees the
-	// final post-policy decision and can never delay or change it.
-	r.tapAfterDecision(typed, base, core, herr, encodedAt, decisionSource)
+	// Telemetry taps in after the response is on the wire: it observes the
+	// event and the hook rail's health (timing, errors) — never the
+	// decision — and can never delay or change the response.
+	r.tapAfterEvent(typed, base, herr, encodedAt)
 	return wire.ExitCode
 }
 

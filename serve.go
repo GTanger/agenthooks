@@ -93,11 +93,9 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
 		core, herr := r.dispatch(hctx, typed)
 		cancel()
-		decisionSource := "handler"
 		if herr != nil {
 			r.logger.Error("agenthooks: handler failed", "hook", fr.Hook, "error", herr)
 			core = failCore(pol, base)
-			decisionSource = "policy"
 		}
 		core = r.applyPolicy(typed, base, core, pol)
 
@@ -112,8 +110,9 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			r.logger.Error("agenthooks: writing reply", "error", err)
 			return 1
 		}
-		// Telemetry taps in after the reply is on the wire (§4.2).
-		r.tapAfterDecision(typed, base, core, herr, encodedAt, decisionSource)
+		// Telemetry taps in after the reply is on the wire (§4.2):
+		// observational only, never the decision.
+		r.tapAfterEvent(typed, base, herr, encodedAt)
 	}
 	if err := sc.Err(); err != nil {
 		r.logger.Error("agenthooks: reading shim stream", "error", err)

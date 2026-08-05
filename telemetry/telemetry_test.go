@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
 )
 
 func TestNewValidatesConfig(t *testing.T) {
@@ -38,7 +36,6 @@ func TestCaptureContentLevel(t *testing.T) {
 	prompt.Kind, prompt.NativeName = "prompt.submitted", "UserPromptSubmit"
 	prompt.Tool = nil
 	prompt.Prompt = "deploy with API_TOKEN=supersecret please"
-	prompt.Decision = hookrecord.Decision{Kind: "accept-prompt", Source: "handler"}
 	if err := rec.RecordHook(prompt); err != nil {
 		t.Fatalf("RecordHook: %v", err)
 	}
@@ -106,7 +103,6 @@ func TestPromptDigestAtDefaultLevel(t *testing.T) {
 	hr.Kind, hr.NativeName = "prompt.submitted", "UserPromptSubmit"
 	hr.Tool = nil
 	hr.Prompt = "refactor the auth middleware"
-	hr.Decision = hookrecord.Decision{Kind: "accept-prompt", Source: "handler"}
 	if err := rec.RecordHook(hr); err != nil {
 		t.Fatalf("RecordHook: %v", err)
 	}

@@ -176,10 +176,12 @@ func New(cfg Config) (*Recorder, error) {
 	return r, nil
 }
 
-// RecordHook captures one post-decision hook event: it builds the log
-// record, injects the deterministic trace/span identity via a synthetic span
-// context on the emit context, and appends the record to the spool through
-// the synchronous SDK pipeline — one buffered file append, no network.
+// RecordHook captures one hook event at end of processing: it builds the
+// observational log record (event identity, payload shape, hook-rail health
+// — never the enforcement decision), injects the deterministic trace/span
+// identity via a synthetic span context on the emit context, and appends the
+// record to the spool through the synchronous SDK pipeline — one buffered
+// file append, no network.
 //
 // RecordHook is invoked by the runner tap agenthooks.WithTelemetry installs.
 // Its parameter type lives in an internal package, so it is not callable by

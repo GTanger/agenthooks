@@ -3,6 +3,7 @@ package telemetry
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
@@ -26,7 +27,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 
 	var rec log.Record
 	rec.SetTimestamp(hr.Time)
-	rec.SetEventName(hr.Kind)
+	rec.SetEventName(eventName(hr))
 	rec.SetSeverity(severityOf(hr))
 	rec.SetSeverityText(severityText(severityOf(hr)))
 
@@ -37,7 +38,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	// eventName field and its URN deriver reads only the attribute.
 	b.str("gram.hook.event", hr.NativeName)
 	b.str("gram.hook.source", hr.Provider)
-	b.str("event.name", hr.Kind)
+	b.str("event.name", eventName(hr))
 	b.str("gram.event.origin", "agenthooks")
 	b.str("agenthooks.provider", hr.Provider)
 	b.str("agenthooks.variant", hr.Variant)
@@ -46,7 +47,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	b.str("gen_ai.response.model", hr.Model)
 	b.str("user.email", hr.UserEmail)
 	if hr.Backfilled {
-		b.bool("agenthooks.event.backfilled", true)
+		b.flag("agenthooks.event.backfilled")
 	}
 	b.str("agenthooks.subagent.id", hr.SubagentID)
 	b.str("agenthooks.subagent.type", hr.SubagentType)
@@ -55,12 +56,9 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	b.str("gen_ai.agent.name", hr.SubagentType)
 	b.float("agenthooks.hook.duration_ms", hr.HookDurationMS)
 
-	// The final decision as the agent saw and applied it, post
-	// capability-degradation.
-	b.str("gram.hook.decision", hr.Decision.Kind)
-	b.str("agenthooks.decision.reason", hr.Decision.Reason)
-	b.bool("agenthooks.decision.blocking", hr.Decision.Blocking)
-	b.str("agenthooks.decision.source", hr.Decision.Source)
+	// Health signals only — the record is observational and never carries
+	// the enforcement decision (the enforcement backend's decision-time log
+	// is the sole record of decisions, RFC §5.1).
 	b.str("agenthooks.handler.error", hr.HandlerErr)
 	// error.type (stable semconv) classifies genuine failures with a
 	// documented low-cardinality value; policy denies are successful
@@ -75,7 +73,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 		b.str("gen_ai.tool.name", t.Name)
 		b.str("agenthooks.tool.canonical", t.Canonical)
 		if t.Synthesized {
-			b.bool("agenthooks.tool.synthesized", true)
+			b.flag("agenthooks.tool.synthesized")
 		}
 		if t.DurationMS != nil {
 			b.float("agenthooks.tool.duration_ms", *t.DurationMS)
@@ -102,7 +100,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 			b.str("agenthooks.mcp.tool", m.Tool)
 			b.str("agenthooks.mcp.command", redactCommand(m.Command))
 			if m.FromConfig {
-				b.bool("agenthooks.mcp.from_config", true)
+				b.flag("agenthooks.mcp.from_config")
 			}
 		}
 	}
@@ -166,7 +164,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 	}
 	traceID, derived := deriveTraceID(hr.Tool != nil, toolCallID, hr.SessionID, toolName)
 	if !derived {
-		b.bool("agenthooks.session.unidentified", true)
+		b.flag("agenthooks.session.unidentified")
 	}
 	scc := trace.SpanContextConfig{
 		TraceID: traceID,
@@ -180,7 +178,7 @@ func (r *Recorder) buildRecord(hr *hookrecord.Record) (log.Record, trace.SpanCon
 		}
 	}
 	if b.truncated {
-		b.bool("agenthooks.record.truncated", true)
+		b.flag("agenthooks.record.truncated")
 	}
 	rec.AddAttributes(b.attrs...)
 	return rec, trace.NewSpanContext(scc)
@@ -209,17 +207,45 @@ func nativeOrKind(hr *hookrecord.Record) string {
 	return hr.Kind
 }
 
-// severityOf maps the event outcome onto log severity: INFO for ordinary
-// events; WARN for ask/flag-output decisions; ERROR for denies, blocked
-// prompts, tool failures, and handler errors. Gram auto-infers severity when
-// unset, so this mapping only refines it.
+// eventName is the record's unified event identity — the top-level
+// EventName field and the event.name attribute, which gram's URN deriver
+// turns into urn:telemetry:agent_hook:log:<event.name>. Mapped kinds pass
+// through as-is (tool.pre, agent.stop, ...). Unmapped natives (kind
+// "other") would all collapse into one URN type, so they classify as
+// "other.<native name>" with the native lowercased and folded to the
+// URN-friendly [a-z0-9._-] alphabet; gram.hook.event carries the native
+// name verbatim alongside.
+func eventName(hr *hookrecord.Record) string {
+	if hr.Kind != "other" || hr.NativeName == "" {
+		return hr.Kind
+	}
+	return "other." + urnSafe(hr.NativeName)
+}
+
+func urnSafe(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
+}
+
+// severityOf maps the record's health signals onto log severity: ERROR for
+// handler/pipeline failures and failed tool executions, INFO for everything
+// else. Decision outcomes never influence severity — records are
+// observational, and a deny is successful enforcement, not a fault in the
+// hook rail. Gram auto-infers severity when unset, so this mapping only
+// refines it.
 func severityOf(hr *hookrecord.Record) log.Severity {
-	switch {
-	case hr.Decision.Blocking, hr.HandlerErr != "",
-		hr.Tool != nil && hr.Tool.Failed:
+	if hr.HandlerErr != "" || (hr.Tool != nil && hr.Tool.Failed) {
 		return log.SeverityError
-	case hr.Decision.Kind == "ask", hr.Decision.Kind == "flag-output":
-		return log.SeverityWarn
 	}
 	return log.SeverityInfo
 }
@@ -239,14 +265,10 @@ func errorType(hr *hookrecord.Record) string {
 }
 
 func severityText(s log.Severity) string {
-	switch s {
-	case log.SeverityError:
+	if s == log.SeverityError {
 		return "ERROR"
-	case log.SeverityWarn:
-		return "WARN"
-	default:
-		return "INFO"
 	}
+	return "INFO"
 }
 
 // recordBuilder accumulates attributes, skipping empty values and running
@@ -273,8 +295,10 @@ func (b *recordBuilder) str(key, value string) {
 	b.attrs = append(b.attrs, attribute.String(key, b.redact(key, value)))
 }
 
-func (b *recordBuilder) bool(key string, v bool) {
-	b.attrs = append(b.attrs, attribute.Bool(key, v))
+// flag attaches a true-valued marker attribute; false markers are expressed
+// by omission.
+func (b *recordBuilder) flag(key string) {
+	b.attrs = append(b.attrs, attribute.Bool(key, true))
 }
 
 func (b *recordBuilder) int(key string, v int) {

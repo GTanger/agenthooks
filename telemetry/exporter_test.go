@@ -19,7 +19,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/speakeasy-api/agenthooks/internal/filelock"
-	"github.com/speakeasy-api/agenthooks/internal/hookrecord"
 )
 
 // otlpServer is an httptest OTLP/HTTP logs endpoint that decodes the
@@ -129,7 +128,6 @@ func spoolTwoRecords(t *testing.T, endpoint string, headers map[string]string) E
 	}
 	post := toolPreRecord()
 	post.Kind, post.NativeName = "tool.post", "PostToolUse"
-	post.Decision = hookrecord.Decision{Kind: "observed", Source: "handler"}
 	if err := rec.RecordHook(post); err != nil {
 		t.Fatalf("RecordHook: %v", err)
 	}
@@ -210,8 +208,8 @@ func TestExporterShipsBacklogThenDeletesFile(t *testing.T) {
 	if records[0]["_trace_id"] != "cec2e4457e6d548f3c3d4cbc02b8f15e" {
 		t.Errorf("shipped trace id = %v, want gram derivation", records[0]["_trace_id"])
 	}
-	if records[0]["gram.hook.decision"] != "deny" || records[1]["gram.hook.decision"] != "observed" {
-		t.Errorf("shipped decisions wrong: %v / %v", records[0]["gram.hook.decision"], records[1]["gram.hook.decision"])
+	if records[0]["event.name"] != "tool.pre" || records[1]["event.name"] != "tool.post" {
+		t.Errorf("shipped event names wrong: %v / %v", records[0]["event.name"], records[1]["event.name"])
 	}
 	if records[0]["_body"] != "Hook: PreToolUse" {
 		t.Errorf("shipped body = %v", records[0]["_body"])

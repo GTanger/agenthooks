@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +105,22 @@ func telemetryAttrs(pr *lpb.LogRecord) map[string]any {
 	return out
 }
 
-func TestWithTelemetryTapSeesFinalDecision(t *testing.T) {
+// requireNoDecisionAttrs asserts the observational contract: records never
+// carry the enforcement decision (the enforcement backend's decision-time
+// log is the sole record of decisions).
+func requireNoDecisionAttrs(t *testing.T, attrs map[string]any) {
+	t.Helper()
+	for _, key := range []string{
+		"gram.hook.decision", "agenthooks.decision.reason",
+		"agenthooks.decision.blocking", "agenthooks.decision.source",
+	} {
+		if _, ok := attrs[key]; ok {
+			t.Errorf("decision attribute %s must not be emitted: %v", key, attrs)
+		}
+	}
+}
+
+func TestWithTelemetryRecordsEvent(t *testing.T) {
 	rec, dir := newTestTelemetry(t)
 	r := quietRunner(WithTelemetry(rec))
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
@@ -122,9 +138,6 @@ func TestWithTelemetryTapSeesFinalDecision(t *testing.T) {
 	}
 	pr := records[0]
 	attrs := telemetryAttrs(pr)
-	if attrs["gram.hook.decision"] != "deny" || attrs["agenthooks.decision.reason"] != "blocked" {
-		t.Errorf("record must carry the final decision: %v", attrs)
-	}
 	if attrs["gram.hook.event"] != "PreToolUse" || attrs["event.name"] != "tool.pre" {
 		t.Errorf("record identity wrong: %v", attrs)
 	}
@@ -134,16 +147,19 @@ func TestWithTelemetryTapSeesFinalDecision(t *testing.T) {
 	if attrs["session.id"] != "sess-claude-1" {
 		t.Errorf("session id wrong: %v", attrs)
 	}
+	requireNoDecisionAttrs(t, attrs)
 	// gram's hashToolCallIDToTraceID("toolu_01ABC").
 	if got := hex.EncodeToString(pr.GetTraceId()); got != "7661011023ab0fab264a729fccde4ff1" {
 		t.Errorf("trace id = %s, want gram derivation for toolu_01ABC", got)
 	}
-	if pr.GetSeverityText() != "ERROR" {
-		t.Errorf("deny severity = %q, want ERROR", pr.GetSeverityText())
+	// The handler denied, but a deny is successful enforcement, not a rail
+	// fault: severity stays INFO.
+	if pr.GetSeverityText() != "INFO" {
+		t.Errorf("severity = %q, want INFO", pr.GetSeverityText())
 	}
 }
 
-func TestWithTelemetryRecordsPolicyDegradedDecision(t *testing.T) {
+func TestWithTelemetryRecordStaysObservationalUnderPolicy(t *testing.T) {
 	rec, dir := newTestTelemetry(t)
 	r := quietRunner(WithTelemetry(rec), WithPolicy(Policy{Unsupported: Degrade, AskFallback: FallbackDeny}))
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
@@ -158,15 +174,101 @@ func TestWithTelemetryRecordsPolicyDegradedDecision(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("spooled records = %d, want 1", len(records))
 	}
+	// Neither the handler's ask nor the degraded deny reaches the record:
+	// it stays a pure observation of the event.
 	attrs := telemetryAttrs(records[0])
-	// The record carries the verdict the provider actually got — deny after
-	// capability degradation — not the handler's ask.
-	if attrs["gram.hook.decision"] != "deny" {
-		t.Errorf("post-degradation decision = %v, want deny", attrs["gram.hook.decision"])
+	requireNoDecisionAttrs(t, attrs)
+	if attrs["event.name"] != "tool.pre" {
+		t.Errorf("event identity wrong: %v", attrs)
 	}
 	// gram's hashToolCallIDToTraceID("call_9").
 	if got := hex.EncodeToString(records[0].GetTraceId()); got != "5e447f59d541311dada70f8d9d26d0e3" {
 		t.Errorf("trace id = %s, want gram derivation for call_9", got)
+	}
+}
+
+func TestWithTelemetryRecordsHandlerError(t *testing.T) {
+	rec, dir := newTestTelemetry(t)
+	r := quietRunner(WithTelemetry(rec))
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		return NoDecision(), errors.New("boom: handler exploded")
+	})
+	// Default FailOpen policy: the wire response stays a no-op.
+	out, code := runWith(t, r, claudeArgs(), fixture(t, "claude/pre_tool_use.json"))
+	if code != 0 {
+		t.Fatalf("fail-open handler error must not change the exit code: %q (exit %d)", out, code)
+	}
+
+	records := readSpooledTelemetry(t, dir)
+	if len(records) != 1 {
+		t.Fatalf("records must fire even when the handler errors: got %d", len(records))
+	}
+	pr := records[0]
+	attrs := telemetryAttrs(pr)
+	if got, _ := attrs["agenthooks.handler.error"].(string); !strings.Contains(got, "handler exploded") {
+		t.Errorf("agenthooks.handler.error = %v, want the handler failure", attrs["agenthooks.handler.error"])
+	}
+	if attrs["error.type"] != "handler_error" {
+		t.Errorf("error.type = %v, want handler_error", attrs["error.type"])
+	}
+	if pr.GetSeverityText() != "ERROR" {
+		t.Errorf("handler-error severity = %q, want ERROR", pr.GetSeverityText())
+	}
+	requireNoDecisionAttrs(t, attrs)
+}
+
+func TestWithTelemetryRecordsUnmappedNative(t *testing.T) {
+	rec, dir := newTestTelemetry(t)
+	r := quietRunner(WithTelemetry(rec))
+	if out, code := runWith(t, r, claudeArgs(), fixture(t, "claude/setup.json")); code != 0 {
+		t.Fatalf("unmapped native must no-op cleanly: %q (exit %d)", out, code)
+	}
+
+	records := readSpooledTelemetry(t, dir)
+	if len(records) != 1 {
+		t.Fatalf("spooled records = %d, want 1", len(records))
+	}
+	attrs := telemetryAttrs(records[0])
+	// The native name rides verbatim; the unified identity classifies as
+	// other.<sanitized native> so unmapped natives do not collapse into a
+	// single gram URN type.
+	if attrs["gram.hook.event"] != "Setup" || attrs["event.name"] != "other.setup" {
+		t.Errorf("unmapped-native identity wrong: %v", attrs)
+	}
+	if records[0].GetEventName() != "other.setup" {
+		t.Errorf("EventName field = %q, want other.setup", records[0].GetEventName())
+	}
+	if attrs["session.id"] != "sess-claude-1" {
+		t.Errorf("session id wrong: %v", attrs)
+	}
+	requireNoDecisionAttrs(t, attrs)
+}
+
+func TestWithTelemetryRecordsBackfilledPrompt(t *testing.T) {
+	rec, dir := newTestTelemetry(t)
+	r := quietRunner(WithTelemetry(rec), WithDedupDir(t.TempDir()))
+	if out, code := runWith(t, r, []string{"agenthooks", "run", "--provider=kimi-code"}, kimiPre("sess-tel-bf")); code != 0 {
+		t.Fatalf("run failed: %q (exit %d)", out, code)
+	}
+
+	// The synthesized reporting-only prompt.submitted records before the
+	// triggering tool.pre, flagged as backfilled (nil Raw, no prompt text
+	// recovered here — the record still forms).
+	records := readSpooledTelemetry(t, dir)
+	if len(records) != 2 {
+		t.Fatalf("spooled records = %d, want 2 (backfilled prompt + tool.pre)", len(records))
+	}
+	prompt := telemetryAttrs(records[0])
+	if prompt["event.name"] != "prompt.submitted" || prompt["agenthooks.event.backfilled"] != true {
+		t.Errorf("backfilled prompt record wrong: %v", prompt)
+	}
+	requireNoDecisionAttrs(t, prompt)
+	toolPre := telemetryAttrs(records[1])
+	if toolPre["event.name"] != "tool.pre" {
+		t.Errorf("triggering event record wrong: %v", toolPre)
+	}
+	if _, ok := toolPre["agenthooks.event.backfilled"]; ok {
+		t.Errorf("real events must not carry the backfilled flag: %v", toolPre)
 	}
 }
 
@@ -202,7 +304,7 @@ func TestTelemetryTapPanicIsContained(t *testing.T) {
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
 		return Deny("blocked"), nil
 	})
-	r.afterDecision = func(any, *Event, decisionCore, recordTiming, error, string) {
+	r.afterEvent = func(any, *Event, recordTiming, error) {
 		panic("recorder bug")
 	}
 	out, code := runWith(t, r, claudeArgs(), fixture(t, "claude/pre_tool_use.json"))
@@ -372,7 +474,8 @@ func TestServeLoopTapsTelemetry(t *testing.T) {
 		t.Fatalf("spooled records = %d, want 1 (initialize is not a hook event)", len(records))
 	}
 	attrs := telemetryAttrs(records[0])
-	if attrs["gram.hook.decision"] != "deny" || attrs["gram.hook.source"] != "opencode" {
+	if attrs["event.name"] != "tool.pre" || attrs["gram.hook.source"] != "opencode" {
 		t.Errorf("serve-loop record wrong: %v", attrs)
 	}
+	requireNoDecisionAttrs(t, attrs)
 }

@@ -203,7 +203,7 @@ columns and existing queries keep working (G3).
 | 22 | `raw` (scrubbed provider payload) | stored for debugging only (design.go:276: "The backend does not use this for feature behavior") | **dropped from the wire entirely.** Debugging moves to record attributes; local debugging uses `AGENTHOOKS_LOG`. |
 | 23 | `idempotency_key` / `replayed` | Redis dedup claim; `gram.hook.replayed` attr | deterministic trace/span identity (§4.4) enables storage-level dedup; the shipper stamps `gram.hook.replayed=true` (same key) on drained batches |
 | 24 | Device headers `X-Gram-Device-*` | `gram.hook.device.{os,arch,binary_version,harness,...}` attrs on endpoint spans (conventions.go:359-372) | resource attrs `os.type`, `host.arch`, `service.name`, `service.version`, `agenthooks.harness`, `agenthooks.harness.variant`, `agenthooks.harness.version` |
-| 25 | Decision verdict returned to agent | `gram.hook.block_reason` on event row + companion block row; `gram.hook.decision` on metrics; PG `tool_call_blocks` | **Two independent records:** (a) agent-side record attrs `gram.hook.decision` (reusing the existing key, now on the event record) + `agenthooks.decision.reason`, `.blocking`, `.source` — the decision *as the agent saw and applied it*, post capability-degradation; (b) gram's own enforcement log written at decision time (§5.1) — the authoritative record, which keeps `gram.hook.block_reason`. |
+| 25 | Decision verdict returned to agent | `gram.hook.block_reason` on event row + companion block row; `gram.hook.decision` on metrics; PG `tool_call_blocks` | **Enforcement log only:** gram's enforcement log, written at decision time (§5.1), is the sole record of decisions (it carries `gram.hook.decision` and keeps `gram.hook.block_reason`). Agent-side records are purely observational — they log the event, never the verdict — so dual-emit parity diffs (§6) exclude decision fields. |
 | 26 | hash-derived `trace_id`/`span_id` on hook rows | CH `trace_id`, `span_id` columns (trace: `hashToolCallIDToTraceID`; span: random) | log record `TraceId` field populated with **gram's exact existing derivation** (§4.4) so joins and parity diffs work; `SpanId` becomes deterministic per event (an improvement over today's random `generateSpanID`; nothing joins on span_id) |
 
 Items that gram gathers from **other channels** (Claude/Codex native OTEL via
@@ -358,22 +358,26 @@ Rationale:
 
 ### 4.2 Where the recorder taps in
 
-`OnAny` observers run **before** the decision pipeline
-(`agenthooks.go:450-462`, `decideGuarded`), so they cannot see the outcome.
-Telemetry needs the *final* decision, timing, and the policy-degraded result.
-The recorder therefore taps a new **internal post-decision hook** invoked by
-`Runner.Run` after `applyPolicy` and wire encoding (`agenthooks.go:400-432`)
-and by the OpenCode `serve` loop after `encodeOpenCodeReply`
-(`serve.go:94-107`):
+`OnAny` observers run **before** the handler pipeline
+(`agenthooks.go:450-462`, `decideGuarded`), so they cannot see the full
+processing timing or a handler failure. Telemetry needs both: the record's
+duration must cover dispatch-to-response-encoded, and records must fire even
+when handlers error. The recorder therefore taps a new **internal
+end-of-processing hook** invoked by `Runner.Run` after `applyPolicy` and
+wire encoding (`agenthooks.go:400-432`), by the OpenCode `serve` loop after
+`encodeOpenCodeReply` (`serve.go:94-107`), and by the backfill dispatch for
+synthesized reporting-only events:
 
 ```go
 // internal; WithTelemetry installs one.
-type afterDecision func(ev *Event, tool *ToolCall, d decisionCore, timing recordTiming, herr error)
+type afterEvent func(typed any, base *Event, timing recordTiming, herr error)
 ```
 
-Recorded per event: receive time (record timestamp), dispatch duration, final
-`DecisionKind` (post-degradation — the verdict the provider actually got),
-handler error (severity + error attrs), and the encoded outcome class. The
+The tap deliberately does **not** read the decision: records are purely
+observational — the event plus the hook rail's own health (timing, handler
+errors) — and gram's decision-time enforcement log (§5.1) is the sole
+record of decisions. Recorded per event: receive time (record timestamp),
+dispatch duration, and any handler error (severity + error attrs). The
 recorder builds an OTel `log.Record` and `Emit`s it through the package's
 `sdk/log` `LoggerProvider`, whose pipeline is a **synchronous simple
 processor feeding the spool exporter** (§4.5) — so the call is wrapped in
@@ -401,9 +405,10 @@ Record anatomy:
   emits e.g. `"Hook: PreToolUse"`), so body-based queries keep working. At
   `CaptureContent`, prompt/assistant-message records carry the text as the
   body instead (the established body destination, item 18 of §3).
-- **SeverityText/Number** — `INFO` for ordinary events; `WARN` for
-  ask/flag-output decisions and tool errors with `is_interrupt`; `ERROR`
-  for denies, blocked prompts, tool failures, and handler errors. Gram
+- **SeverityText/Number** — `INFO` for ordinary events; `ERROR` for tool
+  failures and handler errors — health signals only. Decision outcomes
+  never influence severity: records do not see decisions at all, and a
+  deny is successful enforcement, not a fault in the hook rail. Gram
   auto-infers severity when unset (`telemetry/README.md`), so this mapping
   only refines it (open question O4 confirms the exact table).
 - **TraceId / SpanId** (native OTLP log fields) — §4.4. The logs handler
@@ -420,6 +425,11 @@ Record anatomy:
   correctness and generic collectors, the attribute for gram's pipeline.
   (Gram's protobuf decode branch, §5.2 item 4, should also lift proto
   `event_name` into the attribute for future SDK-only producers.)
+  Unmapped natives (unified kind `other`) classify as `other.<native>` —
+  the native event name lowercased and folded to the URN-friendly
+  `[a-z0-9._-]` alphabet (e.g. Claude's `Setup` → `other.setup`) — so they
+  do not all collapse into one `urn:telemetry:agent_hook:log:other` type;
+  `gram.hook.event` carries the native name verbatim alongside.
 - **Attributes** (default capture level) — keys chosen to **reconcile with
   what gram derives today** (§3), i.e. the record arrives pre-normalized.
   `gen_ai.*` keys follow the current registry, which lives in the
@@ -439,12 +449,11 @@ Record anatomy:
   | `agenthooks.tool.canonical`, `.synthesized` | `ToolCall` | new |
   | `agenthooks.tool.duration_ms` | `ToolPostEvent` duration | new (§3 row 14); agent-side counterpart of the Claude-native `tool_result.duration_ms` |
   | `gram.mcp.match`, `gram.mcp.server_url`, `agenthooks.mcp.*` | `MCPCall` (redacted) | gram keys: yes (conventions.go:377-387). Note the `mcp.*` namespace is now reserved by the MCP semconv — this library never mints `mcp.*` keys |
-  | `gram.hook.decision`, `agenthooks.decision.reason/.blocking/.source` | final `decisionCore` | `gram.hook.decision` exists (conventions.go:339, metrics-only today — now on the event record) |
-  | `gram.hook.error`, `agenthooks.handler.error`, `error.type` | `ToolPostEvent` / handler failure | `gram.hook.error`: yes (conventions.go:341). `error.type` is the stable-semconv twin, set only for genuine failures with documented low-cardinality values (`tool_error`, `handler_error`) — never for policy denies, which are successful enforcement |
+  | `gram.hook.error`, `agenthooks.handler.error`, `error.type` | `ToolPostEvent` / handler failure | `gram.hook.error`: yes (conventions.go:341). `error.type` is the stable-semconv twin, set only for genuine failures with documented low-cardinality values (`tool_error`, `handler_error`) — never for policy denies, which are successful enforcement. These are the record's *health* attributes; no decision attribute exists (§3 row 25 — the enforcement log owns the verdict) |
   | `gen_ai.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_creation.input_tokens`, `gen_ai.usage.cost`, `agenthooks.loop_count` | `StopEvent.Usage` / `LoopCount` | yes. Token keys match the current semconv registry exactly (which gram's `conventions.go:439-440` already mirrors); `gen_ai.usage.cost` is a gram extension with no semconv equivalent, kept for pipeline compat. If reasoning tokens are ever carried, the semconv key is `gen_ai.usage.reasoning.output_tokens` — not gram's legacy `gen_ai.usage.reasoning_tokens`, which gram should map at ingest |
   | `agenthooks.prompt.length`, `.prompt.sha256` | `PromptEvent` | new (text itself only at `CaptureContent`) |
   | `agenthooks.hook.duration_ms` | dispatch timing (receive → response encoded) | new. **Changed** from `agenthooks.duration_ms`: namespaced under `.hook.` so it cannot be confused with Claude's flat `duration_ms`, which measures tool execution, not hook overhead (§4.9) |
-  | `agenthooks.event.backfilled` | `Event.Backfilled` | new |
+  | `agenthooks.event.backfilled` | `Event.Backfilled` | new. `true` on synthesized reporting-only events (the prompt backfill for Kimi/Cursor print modes): `Raw` is nil and any handler decision was discarded, but the record still forms — same shape, backfill-flagged |
   | `agenthooks.subagent.id/type`, `gen_ai.agent.name` | `AgentInfo` when present | new. `gen_ai.agent.name` carries the subagent type as its semconv twin (the registry's "human-readable name of the agent"); the per-invocation subagent *id* stays custom — `gen_ai.agent.id` means a stable hosted-agent resource, which this is not |
   | `user.email` | consumer-supplied (resolver hook) | read by logs attribution (otel.go:454) |
 
@@ -760,7 +769,7 @@ event beyond storing it (everything is stored).
 | `user_prompt` (`prompt_length`; `prompt` text only with `OTEL_LOG_USER_PROMPTS=1`) | stored + schedules the prompt-correlation workflow (`otel.go:511-532`) | `prompt.submitted` (`agenthooks.prompt.length/.sha256`; text at `CaptureContent`) | both see the prompt; join on `session.id`. Content gating differs: Claude's is a per-device env flag, agenthooks' an org-distributed capture level (§4.6) |
 | `assistant_response` (`response`, `model`, `request_id`, `message.uuid`) | stored; no feature consumer | `agent.stop` message capture (§3 row 18) | Claude adds `message.uuid` (transcript join) and per-response `request_id`; agenthooks sees final text only where the provider exposes it |
 | `tool_result` (`tool_name`, `tool_use_id`, `success`, `duration_ms`, sizes, `decision_source`) | stored | `tool.post` / `tool.error` | strongest overlap. Join: `tool_use_id` = `gen_ai.tool.call.id` (same underlying id, per Claude's docs). Claude adds I/O sizes + decision provenance; agenthooks adds `gram.mcp.*` resolution, `error.type` failure classing, and output content under org-controlled capture |
-| `tool_decision` (`decision` accept/reject, `source` config/hook/user_*) | stored | decision attrs on `tool.pre` (+ gram's enforcement log, §5.1) | the near-duplicate case — see dual-rail note below. Claude's `source` taxonomy covers config/user decisions that never reach a hook; agenthooks carries the reason/policy detail Claude flattens to accept/reject |
+| `tool_decision` (`decision` accept/reject, `source` config/hook/user_*) | stored | **none** — agenthooks records are observational and carry no verdict; gram's enforcement log (§5.1) owns decision logging | Claude's `source` taxonomy covers config/user decisions that never reach a hook; for hook-made decisions the enforcement log carries the reason/policy detail Claude flattens to accept/reject. Correlate the observational `tool.pre` record via `tool_use_id` = `gen_ai.tool.call.id` |
 | `api_request`, `api_error`, `api_refusal`, `api_retries_exhausted`, `api_{request,response}_body` | stored; `api_request` feeds identity extraction (`otel.go:320-343`) and MCP-attribution staging when redacted (`otel.go:503-509`); cost/token **metrics** feed usage rollups (`pending_helpers.go:535-547`) | **none** — hooks never see API internals | Claude-only: per-request cost, tokens, cache, model, request ids, errors/refusals. agenthooks' `gen_ai.usage.*` on `agent.stop` is turn-grained and provider-dependent — a different measurement, not a substitute |
 | `mcp_server_connection` (`status`, `transport_type`; `server_name` only with `OTEL_LOG_TOOL_DETAILS=1`) | stored | `session.start` MCP inventory + per-call `gram.mcp.*` | complementary angles: Claude sees connection lifecycle; agenthooks resolves server identity/URL/command per call (shadow-MCP evidence), unredacted by default |
 | `skill_activated`, `compaction`, `permission_mode_changed`, `auth`, `internal_error`, `plugin_installed/loaded`, `at_mention`, `feedback_survey` | stored; no feature consumers | `compact.pre/.post` (trigger only); skill via §3 row 19; `permission.request` partially; rest: none | mostly Claude-only product internals |
@@ -782,12 +791,13 @@ where the Claude rail covers exactly one.
   already consumes), decisions made by config rules or the human at the
   permission prompt (paths where no hook fires), and meta-telemetry about
   hook execution itself.
-- *agenthooks*: provider-uniform coverage, full enforcement decision detail
-  (deny/ask/rewrite + reason + policy source, not just accept/reject),
-  MCP transport resolution and shadow-MCP evidence, turn identity
-  (`agenthooks.turn.id`), deterministic trace-context aligned with gram's
-  joins (§4.4), and org-controlled (rather than per-device env-flag)
-  content capture with built-in redaction.
+- *agenthooks*: provider-uniform coverage, MCP transport resolution and
+  shadow-MCP evidence, turn identity (`agenthooks.turn.id`), deterministic
+  trace-context aligned with gram's joins (§4.4), hook-rail health (dispatch
+  duration, handler errors), and org-controlled (rather than per-device
+  env-flag) content capture with built-in redaction. Full decision detail
+  (deny/ask/rewrite + reason + policy source, not just accept/reject) lives
+  on gram's enforcement log (§5.1), not on the agent-side records.
 
 **Naming positioning.** The agenthooks record deliberately uses gram's
 derived-row dialect (`gram.hook.*`, `gen_ai.*`, §4.3) rather than Claude's
@@ -826,13 +836,14 @@ materialized column for both rails (§5.2).
   them, and O5's server-side usage synthesis must stay scoped to providers
   without a native usage rail so it never double-counts
   `provider_otel:metric:usage` rows.
-- One decision can legitimately produce **three records**: Claude's
-  `tool_decision` (`source="hook"`), the agenthooks decision record, and
-  gram's enforcement log row (§5.1). Precedence for readers: the
-  enforcement log is authoritative for *what policy decided*; the
-  agenthooks record is the *agent-side applied outcome* (post
-  capability-degradation); `tool_decision` is provider-side provenance,
-  and the only record for config/user decisions hooks never see. This is
+- One decision can legitimately produce **two records**: gram's enforcement
+  log row (§5.1) and Claude's `tool_decision` (`source="hook"`). Precedence
+  for readers: the enforcement log is authoritative for *what policy
+  decided*; `tool_decision` is provider-side provenance, and the only
+  record for config/user decisions hooks never see. The agenthooks event
+  record deliberately carries no verdict — join it in by trace ID or
+  tool-call id when the observational context around a decision (timing,
+  MCP resolution, payload shape) is needed. This is
   documentation/MV-guidance, not a pipeline change (O11).
 
 ---
@@ -850,11 +861,16 @@ Enforcement gets a first-class, self-contained record written **at decision
 time** by the decision sites themselves — `evaluateCanonicalHook`
 (`ingest_hooks.go:410`), the legacy PreToolUse/UserPromptSubmit handlers,
 and the shadow-MCP evaluator — instead of decision fields being stamped
-onto observability rows derived from the request:
+onto observability rows derived from the request. This log is the **sole
+record of decisions across both rails**: agent-side telemetry records are
+purely observational and never carry the verdict (§4.2, §4.3), so nothing
+else re-records what policy decided.
 
-- **ClickHouse:** one `telemetry_logs` row per *evaluated* gating event
-  (allow and deny both — allows are cheap and make deny-rate queries
-  self-contained), classified
+- **ClickHouse:** one `telemetry_logs` row per *evaluated* gating event —
+  allow and deny both, and allow-row logging is **required**, not merely
+  cheap: with no agent-side decision attributes, an unlogged allow would
+  be recorded nowhere (it also keeps deny-rate queries self-contained).
+  Classified
   `urn:telemetry:gram_service:log:hook.decision`. Attributes:
   `gram.hook.decision` (allow/deny/warn — key exists,
   `conventions.go:339`), `gram.hook.block_reason`, `gram.hook.event`,
@@ -999,7 +1015,7 @@ derivation**.
 
 **Phase 0 — library (this repo)**
 1. Land the `telemetry` package, `WithTelemetry`, spool, the exporter (verb
-   + `RunExporter`), and the internal post-decision tap. Opt-in; no
+   + `RunExporter`), and the internal end-of-processing tap. Opt-in; no
    consumer change yet. Update DESIGN.md's non-goals to reflect the
    telemetry package. Fixture-test record determinism per provider
    (golden corpus already exists in `agenthookstest`), including a
@@ -1086,8 +1102,9 @@ switched).
   refresh frequency drops on observe-heavy sessions. Is gating-event
   frequency sufficient, or does the posture need a dedicated (rare) refresh
   call?
-- **O4 — Severity mapping.** Proposed: INFO default; WARN for ask/flag and
-  interrupted tools; ERROR for deny/block, tool failure, handler error.
+- **O4 — Severity mapping.** Proposed: INFO default; ERROR for tool
+  failure and handler error — health signals only, since records carry no
+  decisions (§4.3) and a deny is successful enforcement, not a fault.
   Gram auto-infers severity when unset — should the library set severity at
   all, or leave inference to the backend so agent- and server-derived rows
   can't disagree during dual-emit?
@@ -1118,9 +1135,11 @@ switched).
   the exporter's continuous polling rather than a cron flush. No decision
   left open.
 - **O9 — Enforcement-allow row volume.** §5.1 logs allows as well as
-  denies. At fleet scale this multiplies gating-event rows; if volume is a
-  concern, sample allows (keep all denies/warns) — needs a gram capacity
-  check.
+  denies. At fleet scale this multiplies gating-event rows — but sampling
+  allows (keep all denies/warns) is now lossy in a way earlier drafts
+  weren't: the enforcement log is the sole record of decisions (§5.1,
+  agent-side records carry no verdict), so a sampled-out allow is recorded
+  nowhere. Needs a gram capacity check before any sampling is considered.
 - **O10 — OTLP encoding: resolved into the design.** With the OTel-Go SDK
   decision (§4.1 Dependencies), the exporter ships via `otlploghttp`,
   which emits OTLP **protobuf** — so gram's logs endpoint gains a small
@@ -1133,8 +1152,9 @@ switched).
   URN-origin scoping and one-rail-per-metric, but today's metrics MVs
   aggregate `telemetry_logs` without origin filters. Do we (a) audit and
   add origin predicates to the MVs that count tool calls/sessions/denies,
-  (b) publish the three-record decision precedence (enforcement log >
-  agenthooks record > Claude `tool_decision`) as a documented convention,
+  (b) publish the two-record decision precedence (enforcement log
+  authoritative; Claude `tool_decision` as provider-side provenance, the
+  agenthooks record carrying no verdict at all) as a documented convention,
   and (c) constrain O5's usage-row synthesis to providers with no native
   usage rail so it can't double-count `provider_otel:metric:usage`? All
   three look necessary before recommending customers enable both rails.

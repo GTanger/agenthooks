@@ -1,8 +1,8 @@
-// Package hookrecord carries the runner's post-decision view of one hook
-// event across the agenthooks ↔ telemetry package boundary. It is internal
-// on purpose: the telemetry recorder's tap methods take these types, which
-// keeps them callable by the runner but not by external consumers, without
-// growing the public API of either package.
+// Package hookrecord carries the runner's end-of-processing view of one
+// hook event across the agenthooks ↔ telemetry package boundary. It is
+// internal on purpose: the telemetry recorder's tap methods take these
+// types, which keeps them callable by the runner but not by external
+// consumers, without growing the public API of either package.
 package hookrecord
 
 import (
@@ -10,10 +10,12 @@ import (
 	"time"
 )
 
-// Record is the post-decision snapshot of a hook event the runner hands to
+// Record is the observational snapshot of a hook event the runner hands to
 // the telemetry recorder: identity, the normalized payload fields telemetry
-// needs, and the final applied decision (post capability-degradation) — the
-// verdict the provider actually received.
+// needs, and processing-health signals (dispatch duration, handler errors).
+// Deliberately absent: the enforcement decision — telemetry logs the event,
+// never the verdict; gram's decision-time enforcement log is the sole
+// record of decisions.
 type Record struct {
 	Provider   string
 	Variant    string
@@ -44,7 +46,6 @@ type Record struct {
 	SessionEndReason string
 	CompactTrigger   string
 
-	Decision   Decision
 	HandlerErr string // non-empty when the handler pipeline failed
 
 	// HookDurationMS is dispatch-to-response-encoded time in milliseconds —
@@ -83,16 +84,4 @@ type Usage struct {
 	CacheReadTokens  *int
 	CacheWriteTokens *int
 	Cost             *float64
-}
-
-// Decision is the final decision as applied on the wire.
-type Decision struct {
-	Kind     string // DecisionKind.String() form: "deny", "allow", ...
-	Reason   string
-	Blocking bool
-	// Source is "handler" when the decision came out of the handler
-	// pipeline, "policy" when the runner's failure policy substituted it
-	// (handler failure or encode fallback), and "backfill" for synthesized
-	// reporting-only events whose handler decision is discarded.
-	Source string
 }
