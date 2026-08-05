@@ -20,6 +20,15 @@ const testHelperEnv = "AGENTHOOKS_TEST_HELPER"
 
 func TestMain(m *testing.M) {
 	name := strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0]))
+	// An explicit helper role wins over the binary's name: the stand-in for a
+	// running Claude session is the same on-PATH copy the CLI harness uses, so
+	// that CLAUDE_PID resolves to a claude executable the way a real session's
+	// does. Dispatching on the name alone would turn that launcher into a
+	// one-shot CLI run.
+	if os.Getenv(testHelperEnv) == "claude-launch" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 	if strings.EqualFold(name, "claude") {
 		fakeClaudeMain()
 		os.Exit(0)
@@ -140,6 +149,11 @@ func isolateHome(t *testing.T) string {
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(home, ".kimi-code"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("PATH", filepath.Join(home, "bin-empty"))
+	// Claude launch context is recovered from CLAUDE_PID, so a suite run from
+	// inside a live Claude Code session would otherwise inherit that session's
+	// pid and probe the developer's real CLI instead of the fake. Tests that
+	// want a launch context call startClaudeLaunch, which sets its own.
+	t.Setenv("CLAUDE_PID", "")
 	return home
 }
 
@@ -337,7 +351,14 @@ func readFakeCalls(t *testing.T, path string) []fakeClaudeCall {
 
 func startClaudeLaunch(t *testing.T, projectDir string, args ...string) {
 	t.Helper()
-	exe, err := os.Executable()
+	// Launch the copy installed on PATH as `claude`, not the raw test binary:
+	// resolution recovers the CLI from CLAUDE_PID's executable, and a real
+	// session's CLAUDE_PID is always the claude binary itself. Both are copies
+	// of this test binary, so the helper behaves identically either way.
+	exe, err := exec.LookPath("claude")
+	if err != nil {
+		exe, err = os.Executable()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1703,5 +1724,37 @@ func TestResolveMCPKimiNeverProbesCLI(t *testing.T) {
 	mcpTestRunner(t).resolveMCP(ev)
 	if cliRuns(t, count) != 0 {
 		t.Error("`claude mcp list` is claude-specific; Kimi must not probe it")
+	}
+}
+
+// Hooks inherit the session's environment, and a desktop- or MDM-launched
+// Claude frequently passes one without the CLI on PATH. Resolution must fall
+// back to the binary that launched the session, or every MCP call from such a
+// machine loses its server identity — which downstream reads as shadow MCP.
+func TestResolveMCPClaudeListUsesLaunchExecutableWithoutPATH(t *testing.T) {
+	home := isolateHome(t)
+	count := fakeClaudeCLI(t, "claude.ai Linear (Acme): https://mcp.linear.app/sse (SSE) - ✓ Connected\n")
+	project := t.TempDir()
+	startClaudeLaunch(t, project, "-p", "prompt")
+
+	// Everything above mirrors a normal session; now take the CLI off PATH.
+	empty := filepath.Join(home, "bin-empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", empty)
+	if _, err := exec.LookPath("claude"); err == nil {
+		t.Fatal("claude must not be resolvable on PATH for this test to mean anything")
+	}
+
+	r := mcpTestRunner(t)
+	ev := mcpToolPre(ProviderClaudeCode, project, "mcp__claude_ai_Linear_Acme__create_issue")
+	r.resolveMCP(ev)
+
+	if ev.Tool.MCP.URL != "https://mcp.linear.app/sse" || !ev.Tool.MCP.FromConfig {
+		t.Errorf("launch executable must resolve the connector without PATH: %+v", ev.Tool.MCP)
+	}
+	if got := cliRuns(t, count); got != 1 {
+		t.Errorf("CLI must run once, ran %d times", got)
 	}
 }

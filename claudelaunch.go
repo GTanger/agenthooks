@@ -17,6 +17,12 @@ import (
 // inventory. Hooks receive CLAUDE_PID but not the launch arguments themselves.
 type claudeLaunchContext struct {
 	ProjectDir string
+	// Executable is the claude binary that launched this session, recovered
+	// from CLAUDE_PID. `claude mcp list` is otherwise resolved off PATH, which
+	// a desktop- or MDM-launched session frequently does not carry — and a
+	// failed probe silently costs every MCP call its server identity. Mirrors
+	// codexLaunchContext.Executable.
+	Executable string
 	MCPConfigs []string
 	ReplayArgs []string
 	PluginDirs []string
@@ -40,11 +46,19 @@ func currentClaudeLaunchContext(cwd string) claudeLaunchContext {
 		return c
 	}
 	c = parseClaudeLaunchArgs(args, projectDir)
+	// argv[0] can be a bare name or a relative path; the kernel's own answer
+	// is absolute and survives a working-directory change.
+	if executable, err := procExecutable(pid); err == nil && executable != "" {
+		c.Executable = executable
+	}
 	return c
 }
 
 func parseClaudeLaunchArgs(args []string, projectDir string) claudeLaunchContext {
 	c := claudeLaunchContext{ProjectDir: projectDir}
+	if len(args) > 0 {
+		c.Executable = args[0]
+	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -188,6 +202,9 @@ func (c claudeLaunchContext) cacheKey() string {
 	}
 	writeHashPart("agenthooks-claude-mcp-v3")
 	writeHashPart(c.ProjectDir)
+	// Two Claude installs can present different inventories from one project
+	// dir, so the snapshot is only reusable for the binary that produced it.
+	writeHashPart(c.Executable)
 	writeHashPart(strconv.FormatBool(c.StrictMCP))
 	writeHashPart(strconv.FormatBool(c.Bare))
 	writeHashPart(strconv.FormatBool(c.SafeMode))
