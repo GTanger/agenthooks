@@ -4,12 +4,71 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMCPInventoryCompletesBeforeFirstTool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".claude.json"), []byte(`{"mcpServers":{"remote":{"url":"https://mcp.example.com"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reported := false
+	r := New(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
+	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
+		if len(event.Servers) != 1 || event.Servers[0].Name != "remote" {
+			t.Fatalf("unexpected inventory: %#v", event.Servers)
+		}
+		reported = true
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		if !reported {
+			t.Fatal("inventory handler must complete before the tool handler starts")
+		}
+		return NoDecision(), nil
+	})
+
+	payload := strings.NewReader(fmt.Sprintf(`{"session_id":"session-1","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`, cwd))
+	var stdout, stderr bytes.Buffer
+	if code := r.Run(t.Context(), []string{"run", "--provider=claude-code", "--variant=cli"}, payload, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d: %s", code, stderr.String())
+	}
+	if !reported {
+		t.Fatal("inventory was not reported")
+	}
+}
+
+func TestMCPInventoryRetriesAfterHandlerFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r := New(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
+	attempts := 0
+	r.OnMCPInventory(func(_ context.Context, _ *MCPInventoryEvent) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		return NoDecision(), nil
+	})
+
+	payload := []byte(`{"session_id":"session-retry","hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`)
+	runWith(t, r, claudeArgs(), payload)
+	runWith(t, r, claudeArgs(), payload)
+	if attempts != 2 {
+		t.Fatalf("inventory attempts = %d, want 2", attempts)
+	}
+}
 
 func quietRunner(opts ...Option) *Runner {
 	opts = append([]Option{WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))}, opts...)

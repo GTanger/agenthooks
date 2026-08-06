@@ -57,6 +57,7 @@ type Runner struct {
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
+	hMCPInventory  []func(context.Context, *MCPInventoryEvent) error
 	hPrompt        []func(context.Context, *PromptEvent) (PromptDecision, error)
 	hToolPre       []func(context.Context, *ToolPreEvent) (ToolPreDecision, error)
 	hToolPost      []func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
@@ -160,6 +161,9 @@ func (r *Runner) OnSessionStart(hs ...func(context.Context, *SessionStartEvent) 
 }
 func (r *Runner) OnSessionEnd(hs ...func(context.Context, *SessionEndEvent) error) {
 	r.hSessionEnd = append(r.hSessionEnd, hs...)
+}
+func (r *Runner) OnMCPInventory(hs ...func(context.Context, *MCPInventoryEvent) error) {
+	r.hMCPInventory = append(r.hMCPInventory, hs...)
 }
 func (r *Runner) OnPromptSubmitted(hs ...func(context.Context, *PromptEvent) (PromptDecision, error)) {
 	r.hPrompt = append(r.hPrompt, hs...)
@@ -397,6 +401,18 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		}
 	}
 
+	// Inventory is its own event, but ordering is strict: SessionStart reports
+	// it eagerly and the first pre-tool hook retries synchronously if that
+	// report did not complete. The tool handler never races the inventory
+	// handler or its downstream response.
+	tool := toolOf(typed)
+	if base.Kind == KindSessionStart || base.NativeName == "ConfigChange" ||
+		((base.Kind == KindToolPre || base.Kind == KindPermission) && tool != nil && tool.MCP != nil) {
+		if err := r.reportMCPInventory(hctx, base); err != nil {
+			r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
+		}
+	}
+
 	core, herr := r.dispatch(hctx, typed)
 	if herr != nil {
 		r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", herr)
@@ -514,6 +530,8 @@ func (r *Runner) invoke(ctx context.Context, typed any) (Decision, error) {
 		return liftDecision(runStages(ctx, ev, r.hSessionStart))
 	case *SessionEndEvent:
 		return observeStages(ctx, ev, r.hSessionEnd)
+	case *MCPInventoryEvent:
+		return observeStages(ctx, ev, r.hMCPInventory)
 	case *SubagentStartEvent:
 		return observeStages(ctx, ev, r.hSubagentStart)
 	case *CompactEvent:

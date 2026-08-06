@@ -45,10 +45,14 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	entries, _ := r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+	entries, _ := r.claudeMCPListSnapshot(launch)
+	return entries
+}
+
+func (r *Runner) claudeMCPListSnapshot(launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
+	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runClaudeMCPList(ctx, launch)
 	})
-	return entries
 }
 
 func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([]mcpConfigEntry, bool)) ([]mcpConfigEntry, bool) {
