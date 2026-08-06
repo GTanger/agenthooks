@@ -33,6 +33,13 @@ const ProtocolVersion = 1
 // length prefix allocate unbounded memory.
 const MaxFrameBytes = 64 << 20
 
+// maxSocketPath conservatively undercuts both sun_path limits (104 bytes on
+// macOS/BSD, 108 on Linux); longer derived unix socket paths fall back to
+// the system temp dir, whose paths are short by construction. Windows named
+// pipes have no such constraint — the constant lives here so cross-platform
+// test code compiles everywhere.
+const maxSocketPath = 96
+
 // Request is one hook invocation forwarded by the client: the client's full
 // argv (the server re-parses it for --provider/--timeout/--filter and the
 // payload-carrying positionals of the notify verb), the raw stdin payload,

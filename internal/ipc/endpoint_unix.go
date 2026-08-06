@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// maxSocketPath conservatively undercuts both sun_path limits (104 bytes on
-// macOS/BSD, 108 on Linux). Longer derived paths fall back to the system
-// temp dir, whose paths are short by construction.
-const maxSocketPath = 96
-
 // stateDir roots the sockets and lock files:
 // $XDG_STATE_HOME/agenthooks, falling back to the user cache dir, then the
 // system temp dir.
