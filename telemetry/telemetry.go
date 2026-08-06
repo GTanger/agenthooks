@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -82,6 +83,13 @@ type Config struct {
 	// always applies its built-in transport-credential redaction (URLs,
 	// commands, token-shaped values) first; Redactor runs after it.
 	Redactor func(key string, value string) string
+
+	// ExportInterval overrides how often the batch processor ships buffered
+	// records in the background. Zero keeps the SDK default (1s). Intended
+	// for tests and latency tuning — a short interval lets a test observe
+	// exports deterministically without racing the default schedule;
+	// production consumers rarely need to set it.
+	ExportInterval time.Duration
 
 	// HonorTraceparent opts into W3C trace-context parenting: when the
 	// recording process carries a valid TRACEPARENT environment variable
@@ -152,9 +160,13 @@ func New(cfg Config) (*Recorder, error) {
 	if err != nil {
 		return nil, errors.New("telemetry: building exporter: " + err.Error())
 	}
+	var procOpts []sdklog.BatchProcessorOption
+	if cfg.ExportInterval > 0 {
+		procOpts = append(procOpts, sdklog.WithExportInterval(cfg.ExportInterval))
+	}
 	provider := sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter, procOpts...)),
 	)
 	r := &Recorder{
 		cfg:      cfg,

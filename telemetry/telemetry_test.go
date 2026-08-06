@@ -140,6 +140,30 @@ func TestRecordHookAfterShutdownIsNoOp(t *testing.T) {
 	}
 }
 
+// TestExportIntervalReachesBatchProcessor asserts the Config.ExportInterval
+// seam is plumbed through: with a short interval the record ships in the
+// background — no ForceFlush — well before the SDK's 1s default schedule
+// would have fired, so a dropped option fails the test.
+func TestExportIntervalReachesBatchProcessor(t *testing.T) {
+	rec, exp := newTestRecorder(t, func(cfg *Config) { cfg.ExportInterval = 10 * time.Millisecond })
+	if err := rec.RecordHook(toolPreRecord()); err != nil {
+		t.Fatalf("RecordHook: %v", err)
+	}
+	deadline := time.Now().Add(900 * time.Millisecond)
+	for {
+		exp.mu.Lock()
+		n := len(exp.recs)
+		exp.mu.Unlock()
+		if n >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("record never exported on the custom interval (records = %d)", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestShutdownShipsOverOTLP exercises the real export path end to end: a
 // record is enqueued, Shutdown flushes it to an OTLP/HTTP endpoint with
 // gzip compression and the configured auth headers.
