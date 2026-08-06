@@ -2,6 +2,7 @@ package agenthooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,7 +15,11 @@ import (
 //	mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor CLI
 //	mybinary agenthooks notify --provider=codex                  # legacy codex notify (argv JSON)
 //	mybinary agenthooks serve  --provider=opencode               # NDJSON daemon for the shim
-//	mybinary agenthooks server [--idle-timeout=10m]              # hook server (auto-spawned by client)
+//	mybinary agenthooks server [--idle-timeout=10m] [--socket=P] # hook server (auto-spawned by client)
+//
+// --socket=P (client and server modes; never rendered by install) pins the
+// rendezvous to an explicit endpoint instead of the derived identity — for
+// external supervision, tests, containers, and machine-wide servers.
 type invocation struct {
 	mode        string // "run", "notify", "serve", "server", "client"
 	provider    Provider
@@ -34,6 +39,10 @@ type invocation struct {
 	preArgs []string
 	// idleTimeout overrides the server's idle shutdown (server mode only).
 	idleTimeout time.Duration
+	// socket is the explicit rendezvous override (client/server modes):
+	// the endpoint — a unix socket path, or a named-pipe name on Windows —
+	// used verbatim, bypassing identity derivation (internal/ipc).
+	socket string
 }
 
 var validProviders = map[Provider]bool{
@@ -103,6 +112,11 @@ func parseArgs(args []string) (*invocation, error) {
 				return nil, fmt.Errorf("agenthooks: bad --idle-timeout: %w", err)
 			}
 			inv.idleTimeout = d
+		case strings.HasPrefix(a, "--socket="):
+			inv.socket = strings.TrimPrefix(a, "--socket=")
+			if inv.socket == "" {
+				return nil, errors.New("agenthooks: bad --socket: empty endpoint")
+			}
 		case strings.HasPrefix(a, "--"):
 			// Unknown flags are tolerated for forward compatibility with
 			// newer generated configs driving older library versions.

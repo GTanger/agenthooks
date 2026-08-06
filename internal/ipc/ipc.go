@@ -1,8 +1,16 @@
 // Package ipc is the transport between the per-hook client process
 // (`mybinary agenthooks client`) and the long-running hook server
 // (`mybinary agenthooks server`): endpoint derivation from the consumer
-// identity, length-prefixed JSON framing, and the request/response types.
-// Unix domain sockets everywhere except Windows, which uses named pipes.
+// identity and location, length-prefixed JSON framing, and the
+// request/response types. Unix domain sockets everywhere except Windows,
+// which uses named pipes.
+//
+// The rendezvous is resolved one of two ways. Resolve derives it from the
+// consumer identity — executable path, pre-sentinel flags, and the
+// client's normalized working directory — so each deployment gets one
+// server per project location (the LSP per-workspace model).
+// ResolveEndpoint takes an explicit endpoint (the --socket override)
+// verbatim, for externally supervised or machine-wide servers.
 //
 // The package is internal on purpose: the wire is an implementation detail
 // of the runner's client/server modes, versioned by ProtocolVersion, not a
@@ -18,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -116,20 +125,46 @@ func ReadFrame(r io.Reader, v any) error {
 	return nil
 }
 
-// Identity fingerprints one consumer deployment: the executable path plus
-// the consumer flags that precede the "agenthooks" sentinel in the hook
-// command (e.g. --config=/path/speakeasy.json). Distinct binaries or
-// distinct configs get distinct identities — and therefore distinct
-// servers; the per-hook flags after the sentinel (--provider, --timeout)
-// deliberately do not participate.
-func Identity(exe string, preArgs []string) string {
+// Identity fingerprints one consumer deployment at one location: the
+// executable path, the consumer flags that precede the "agenthooks"
+// sentinel in the hook command (e.g. --config=/path/speakeasy.json), and
+// the client's normalized working directory (see Location). Distinct
+// binaries, distinct configs, or distinct project directories get distinct
+// identities — and therefore distinct servers, the LSP per-workspace
+// model; the per-hook flags after the sentinel (--provider, --timeout)
+// deliberately do not participate. An empty location contributes nothing,
+// so invocations without a usable working directory fall back to the plain
+// exe+preArgs identity — byte-identical to the pre-location derivation.
+func Identity(exe string, preArgs []string, location string) string {
 	h := sha256.New()
 	h.Write([]byte(exe))
 	for _, a := range preArgs {
 		h.Write([]byte{0})
 		h.Write([]byte(a))
 	}
+	if location != "" {
+		// A distinct separator keeps the location from colliding with a
+		// trailing pre-sentinel flag of the same spelling.
+		h.Write([]byte{1})
+		h.Write([]byte(location))
+	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// Location normalizes a client working directory for identity derivation:
+// filepath.Clean plus best-effort symlink resolution, so different
+// spellings of the same project directory rendezvous on the same server.
+// When symlinks cannot be resolved the cleaned path is used as is; an
+// empty cwd stays empty (the location-less identity fallback).
+func Location(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(cwd)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
 }
 
 // BuildStamp fingerprints the executable file behind path — path, size, and
@@ -165,23 +200,64 @@ type Address struct {
 	SpawnLock string
 }
 
-// Resolve derives the Address for a consumer identity and ensures the state
-// directory exists (0700).
-func Resolve(exe string, preArgs []string) (Address, error) {
-	id := Identity(exe, preArgs)
-	dir, err := stateDir()
+// Resolve derives the Address for a consumer identity at a location (the
+// client's normalized working directory — see Location; empty means
+// location-less) and ensures the state directory exists (0700). The
+// endpoint embeds only the identity hash, never the location path itself,
+// so derived unix socket paths stay within sun_path limits no matter how
+// deep the project directory is.
+func Resolve(exe string, preArgs []string, location string) (Address, error) {
+	dir, err := ensureStateDir()
 	if err != nil {
-		return Address{}, fmt.Errorf("ipc: resolving state dir: %w", err)
+		return Address{}, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Address{}, fmt.Errorf("ipc: creating state dir: %w", err)
-	}
+	id := Identity(exe, preArgs, location)
 	return Address{
 		ID:         id,
 		Endpoint:   endpoint(dir, id),
 		ServerLock: lockPath(dir, id, ".lock"),
 		SpawnLock:  lockPath(dir, id, ".spawn"),
 	}, nil
+}
+
+// ResolveEndpoint is the --socket override: the Address for an explicitly
+// chosen endpoint (a unix socket path; a named-pipe name on Windows),
+// used verbatim. Identity derivation is bypassed entirely; the lock files
+// derive from a hash of the endpoint in the state dir, so a client and a
+// server handed the same --socket agree on the whole rendezvous without
+// consulting their own process state. Unix endpoints beyond the sun_path
+// budget are rejected here, before any bind or dial.
+func ResolveEndpoint(explicit string) (Address, error) {
+	if err := validateEndpoint(explicit); err != nil {
+		return Address{}, err
+	}
+	dir, err := ensureStateDir()
+	if err != nil {
+		return Address{}, err
+	}
+	// Domain-separated from Identity so an explicit endpoint can never
+	// collide with a derived identity's lock files.
+	sum := sha256.Sum256([]byte("endpoint\x00" + explicit))
+	id := hex.EncodeToString(sum[:])[:16]
+	return Address{
+		ID:         id,
+		Endpoint:   explicit,
+		ServerLock: lockPath(dir, id, ".lock"),
+		SpawnLock:  lockPath(dir, id, ".spawn"),
+	}, nil
+}
+
+// ensureStateDir resolves the state directory for sockets and locks and
+// creates it (0700) if needed.
+func ensureStateDir() (string, error) {
+	dir, err := stateDir()
+	if err != nil {
+		return "", fmt.Errorf("ipc: resolving state dir: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("ipc: creating state dir: %w", err)
+	}
+	return dir, nil
 }
 
 // dialProbe reports whether something answers on the endpoint right now.

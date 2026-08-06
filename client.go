@@ -14,8 +14,17 @@ import (
 // The `agenthooks client` mode: the lightweight per-hook process that
 // generated configs install in place of `run`. It reads the payload,
 // forwards the invocation to the long-running hook server over the
-// consumer-identity socket (spawning the server first if none answers), and
+// rendezvous socket (spawning the server first if none answers), and
 // relays the server's stdout/stderr/exit code back to the provider.
+//
+// The rendezvous is derived from the consumer identity — executable,
+// pre-sentinel flags, and this process's normalized working directory —
+// so each project location gets its own server (the LSP per-workspace
+// model); `--socket=<endpoint>` overrides the derivation entirely for
+// externally supervised or machine-wide servers. Whenever the client
+// spawns, it hands the resolved endpoint to the server via `--socket`, so
+// the server binds exactly what its client will dial instead of
+// re-deriving from its own — possibly different — process state.
 //
 // In client mode the server is a hard dependency. When it cannot answer —
 // no server, spawn blocked or failed, connect timeout, protocol mismatch,
@@ -79,7 +88,7 @@ func (r *Runner) callServer(inv *invocation, payload []byte) (*ipc.Response, err
 	if err != nil {
 		return nil, fmt.Errorf("resolving executable: %w", err)
 	}
-	addr, err := ipc.Resolve(exe, inv.preArgs)
+	addr, err := resolveAddress(exe, inv)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +135,20 @@ func (r *Runner) callServer(inv *invocation, payload []byte) (*ipc.Response, err
 	return &resp, nil
 }
 
+// resolveAddress picks the rendezvous for one client or server invocation:
+// the explicit --socket endpoint when given, otherwise the derived
+// consumer identity — executable, pre-sentinel flags, and this process's
+// normalized working directory, so each project location gets its own
+// server. A missing working directory degrades to the location-less
+// exe+preArgs identity.
+func resolveAddress(exe string, inv *invocation) (ipc.Address, error) {
+	if inv.socket != "" {
+		return ipc.ResolveEndpoint(inv.socket)
+	}
+	cwd, _ := os.Getwd()
+	return ipc.Resolve(exe, inv.preArgs, ipc.Location(cwd))
+}
+
 // connectOrSpawn dials the endpoint, auto-spawning the server on a miss. A
 // file lock serializes the spawn so a burst of hook invocations starts one
 // server; losers of the lock race just keep re-dialing while the winner's
@@ -144,7 +167,7 @@ func (r *Runner) connectOrSpawn(addr ipc.Address, preArgs []string) (net.Conn, e
 		if r.spawnServer == nil {
 			return nil, fmt.Errorf("dialing hook server: %w (spawning disabled)", err)
 		}
-		if spawnErr := r.spawnServer(preArgs); spawnErr != nil {
+		if spawnErr := r.spawnServer(preArgs, addr.Endpoint); spawnErr != nil {
 			return nil, fmt.Errorf("spawning hook server: %w", spawnErr)
 		}
 	}
@@ -165,12 +188,16 @@ func (r *Runner) connectOrSpawn(addr ipc.Address, preArgs []string) (net.Conn, e
 }
 
 // spawnServerDetached re-execs this binary as the detached hook server,
-// preserving the consumer flags that define the server identity
-// ("mybinary --config=x agenthooks server"). It is the default behind
+// preserving the consumer flags that define the server identity and
+// pinning the rendezvous the client just resolved
+// ("mybinary --config=x agenthooks server --socket=<endpoint>"): the
+// spawned server binds exactly the endpoint its client will dial, whether
+// that endpoint was derived or an explicit --socket, without re-deriving
+// it from its own cwd or exe view. It is the default behind
 // Runner.spawnServer; tests substitute in-process spawns.
-func spawnServerDetached(preArgs []string) error {
-	args := make([]string, 0, len(preArgs)+2)
+func spawnServerDetached(preArgs []string, endpoint string) error {
+	args := make([]string, 0, len(preArgs)+3)
 	args = append(args, preArgs...)
-	args = append(args, "agenthooks", "server")
+	args = append(args, "agenthooks", "server", "--socket="+endpoint)
 	return startDetachedSelf(args, nil)
 }

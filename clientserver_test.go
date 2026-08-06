@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,12 +34,12 @@ func testIdentity(t *testing.T) []string {
 	return []string{"--config=" + filepath.Join(t.TempDir(), "cfg.json")}
 }
 
-func serverRunArgs(preArgs []string, idle string) []string {
+func serverRunArgs(preArgs []string, idle string, extra ...string) []string {
 	args := append(append([]string(nil), preArgs...), "agenthooks", "server")
 	if idle != "" {
 		args = append(args, "--idle-timeout="+idle)
 	}
-	return args
+	return append(args, extra...)
 }
 
 func clientRunArgs(preArgs []string, extra ...string) []string {
@@ -68,8 +69,9 @@ func startServer(t *testing.T, r *Runner, args []string) chan int {
 	return exit
 }
 
-// waitForServer polls the endpoint derived from args' pre-sentinel flags
-// until something accepts.
+// waitForServer polls the endpoint the args resolve to (explicit --socket,
+// or the identity derived from the pre-sentinel flags and this process's
+// cwd) until something accepts.
 func waitForServer(t *testing.T, args []string) {
 	t.Helper()
 	inv, err := parseArgs(args)
@@ -80,7 +82,7 @@ func waitForServer(t *testing.T, args []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr, err := ipc.Resolve(exe, inv.preArgs)
+	addr, err := resolveAddress(exe, inv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +111,27 @@ func waitExit(t *testing.T, exit chan int, what string) int {
 	}
 }
 
+// explicitEndpoint returns a --socket value valid on this OS: a short
+// unix socket path (a fresh short-prefix temp dir keeps it well under the
+// sun_path budget regardless of the test TempDir's depth), or a uniquely
+// named pipe on Windows.
+func explicitEndpoint(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\agenthooks-test-` + strings.ReplaceAll(t.Name(), "/", "-")
+	}
+	dir, err := os.MkdirTemp("", "ahsock") //nolint:usetesting // t.TempDir paths can exceed the sun_path budget; this stays short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // noSpawn disables auto-spawn so a client test fails fast instead of
 // re-execing the test binary.
 func noSpawn(r *Runner) {
-	r.spawnServer = func([]string) error { return errors.New("spawning disabled in this test") }
+	r.spawnServer = func([]string, string) error { return errors.New("spawning disabled in this test") }
 }
 
 func TestClientServerGatingRoundTrip(t *testing.T) {
@@ -171,13 +190,18 @@ func TestClientSpawnsServerOnDemand(t *testing.T) {
 	client.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
 		return Allow(), nil
 	})
-	client.spawnServer = func(gotPre []string) error {
+	client.spawnServer = func(gotPre []string, endpoint string) error {
 		spawns.Add(1)
 		if len(gotPre) != len(preArgs) || gotPre[0] != preArgs[0] {
 			t.Errorf("spawn must preserve pre-sentinel flags: %v", gotPre)
 		}
+		if endpoint == "" {
+			t.Errorf("spawn must hand the resolved endpoint to the server")
+		}
+		// The server binds exactly the endpoint it is told, like the real
+		// detached spawn ("agenthooks server --socket=<endpoint>") does.
 		go func() {
-			exit <- server.Run(context.Background(), serverRunArgs(gotPre, "5s"), strings.NewReader(""), io.Discard, io.Discard)
+			exit <- server.Run(context.Background(), serverRunArgs(gotPre, "5s", "--socket="+endpoint), strings.NewReader(""), io.Discard, io.Discard)
 		}()
 		return nil
 	}
@@ -198,12 +222,12 @@ func TestClientSpawnRaceStartsOneServer(t *testing.T) {
 	exit := make(chan int, 1)
 
 	var spawns atomic.Int32
-	spawn := func(gotPre []string) error {
+	spawn := func(gotPre []string, endpoint string) error {
 		if spawns.Add(1) > 1 {
 			return errors.New("second spawn attempted; the spawn lock failed")
 		}
 		go func() {
-			exit <- server.Run(context.Background(), serverRunArgs(gotPre, "5s"), strings.NewReader(""), io.Discard, io.Discard)
+			exit <- server.Run(context.Background(), serverRunArgs(gotPre, "5s", "--socket="+endpoint), strings.NewReader(""), io.Discard, io.Discard)
 		}()
 		return nil
 	}
@@ -236,6 +260,134 @@ func TestClientSpawnRaceStartsOneServer(t *testing.T) {
 		t.Errorf("spawns = %d, want 1 (spawn lock must serialize the herd)", got)
 	}
 	waitExit(t, exit, "idle server")
+}
+
+// Clients running in two different project directories derive two
+// different rendezvous and therefore two servers — the LSP per-workspace
+// model. Spawns are in-process via the seam; each spawned server is handed
+// the client's endpoint via --socket exactly like the detached re-exec.
+func TestClientPerLocationServers(t *testing.T) {
+	preArgs := testIdentity(t)
+	exits := make(chan int, 2)
+	var mu sync.Mutex
+	var endpoints []string
+	spawn := func(gotPre []string, endpoint string) error {
+		mu.Lock()
+		endpoints = append(endpoints, endpoint)
+		mu.Unlock()
+		srv := denyServerRunner(t)
+		go func() {
+			exits <- srv.Run(context.Background(), serverRunArgs(gotPre, "5s", "--socket="+endpoint), strings.NewReader(""), io.Discard, io.Discard)
+		}()
+		return nil
+	}
+
+	payload := fixture(t, "claude/pre_tool_use.json") // load before leaving the package dir
+	for _, dir := range []string{t.TempDir(), t.TempDir()} {
+		t.Chdir(dir)
+		c := quietRunner()
+		c.spawnServer = spawn
+		out, code := runWith(t, c, clientRunArgs(preArgs, "--provider=claude-code"), payload)
+		if out != denyWire || code != 0 {
+			t.Fatalf("client in %s: got %q (exit %d), want a per-location server's deny", dir, out, code)
+		}
+	}
+
+	mu.Lock()
+	got := append([]string(nil), endpoints...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("distinct locations must spawn distinct servers, got endpoints %v", got)
+	}
+	for i := 0; i < 2; i++ {
+		waitExit(t, exits, "per-location server")
+	}
+}
+
+// A server started with --socket binds exactly that endpoint and a client
+// passing the same --socket reaches it — no identity derivation on either
+// side — while the derived rendezvous stays untouched.
+func TestClientServerExplicitSocket(t *testing.T) {
+	preArgs := testIdentity(t)
+	endpoint := explicitEndpoint(t)
+	exit := startServer(t, denyServerRunner(t), serverRunArgs(preArgs, "5s", "--socket="+endpoint))
+
+	client := quietRunner()
+	noSpawn(client)
+	out, code := runWith(t, client, clientRunArgs(preArgs, "--provider=claude-code", "--socket="+endpoint), fixture(t, "claude/pre_tool_use.json"))
+	if out != denyWire || code != 0 {
+		t.Fatalf("got %q (exit %d), want the --socket server's deny", out, code)
+	}
+
+	// A socket-less sibling derives the identity rendezvous, where nothing
+	// listens: it must fail open, proving the override really is a separate
+	// rendezvous rather than an alias of the derived one.
+	plain := quietRunner()
+	noSpawn(plain)
+	var pout, perr bytes.Buffer
+	pcode := plain.Run(context.Background(), clientRunArgs(preArgs, "--provider=claude-code"),
+		bytes.NewReader(fixture(t, "claude/pre_tool_use.json")), &pout, &perr)
+	if pcode != 0 || pout.Len() != 0 || perr.Len() != 0 {
+		t.Errorf("derived-rendezvous client must fail open: %q %q (exit %d)", pout.String(), perr.String(), pcode)
+	}
+	waitExit(t, exit, "idle server")
+}
+
+// When a --socket client must spawn, the spawned server is handed the same
+// --socket, so both land on the operator-chosen endpoint.
+func TestClientSpawnPassesExplicitSocket(t *testing.T) {
+	preArgs := testIdentity(t)
+	endpoint := explicitEndpoint(t)
+	exit := make(chan int, 1)
+
+	client := quietRunner()
+	client.spawnServer = func(gotPre []string, gotEndpoint string) error {
+		if gotEndpoint != endpoint {
+			t.Errorf("spawn endpoint = %q, want the client's --socket %q", gotEndpoint, endpoint)
+		}
+		srv := denyServerRunner(t)
+		go func() {
+			exit <- srv.Run(context.Background(), serverRunArgs(gotPre, "5s", "--socket="+gotEndpoint), strings.NewReader(""), io.Discard, io.Discard)
+		}()
+		return nil
+	}
+	out, code := runWith(t, client, clientRunArgs(preArgs, "--provider=claude-code", "--socket="+endpoint), fixture(t, "claude/pre_tool_use.json"))
+	if out != denyWire || code != 0 {
+		t.Fatalf("got %q (exit %d), want the spawned server's deny", out, code)
+	}
+	waitExit(t, exit, "idle server")
+}
+
+// An overlong --socket value cannot be bound or dialed: the client fails
+// open rather than surfacing an error to the provider.
+func TestClientFailsOpenOnRejectedSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes have no path-length constraint")
+	}
+	client := quietRunner()
+	noSpawn(client)
+	long := "--socket=/" + strings.Repeat("x", 200) + "/s.sock"
+	var out, errb bytes.Buffer
+	code := client.Run(context.Background(), clientRunArgs(nil, "--provider=claude-code", long),
+		bytes.NewReader(fixture(t, "claude/pre_tool_use.json")), &out, &errb)
+	if code != 0 || out.Len() != 0 || errb.Len() != 0 {
+		t.Errorf("rejected --socket must fail open: %q %q (exit %d)", out.String(), errb.String(), code)
+	}
+}
+
+// The server side of the same mistake is loud: exit 1 with the validation
+// error on stderr, at startup, before any bind.
+func TestServerRejectsOverlongSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes have no path-length constraint")
+	}
+	srv := quietRunner()
+	var out, errb bytes.Buffer
+	code := srv.Run(context.Background(), serverRunArgs(nil, "", "--socket=/"+strings.Repeat("x", 200)+"/s.sock"),
+		strings.NewReader(""), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "at most") {
+		t.Errorf("overlong --socket must fail server startup loudly: exit %d, stderr %q", code, errb.String())
+	}
 }
 
 func TestClientFailsOpenWhenServerUnavailable(t *testing.T) {
@@ -418,7 +570,7 @@ func rawRequest(t *testing.T, preArgs []string, req ipc.Request) ipc.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr, err := ipc.Resolve(exe, preArgs)
+	addr, err := resolveAddress(exe, &invocation{preArgs: preArgs})
 	if err != nil {
 		t.Fatal(err)
 	}

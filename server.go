@@ -17,14 +17,20 @@ import (
 	"github.com/speakeasy-api/agenthooks/internal/ipc"
 )
 
-// The `agenthooks server` mode: a long-running singleton per consumer
-// identity (executable + pre-sentinel flags, see internal/ipc) that hosts
-// the full pipeline — handlers, caches, warm HTTP connections, and the
-// in-process telemetry recorder — across hook invocations. Each connection
-// carries exactly one framed request (a hook event with its argv, payload,
-// and environment snapshot) and receives one framed response (the
-// provider-dialect stdout/stderr/exit code), which the paired
-// `agenthooks client` relays to the provider.
+// The `agenthooks server` mode: a long-running singleton per rendezvous
+// that hosts the full pipeline — handlers, caches, warm HTTP connections,
+// and the in-process telemetry recorder — across hook invocations. Each
+// connection carries exactly one framed request (a hook event with its
+// argv, payload, and environment snapshot) and receives one framed
+// response (the provider-dialect stdout/stderr/exit code), which the
+// paired `agenthooks client` relays to the provider.
+//
+// The rendezvous comes from `--socket=<endpoint>` when given — clients
+// always pass it when they spawn, and external supervisors should always
+// pass it too, rather than relying on the server's own working directory.
+// Without the flag the server derives it the same way a client does:
+// executable, pre-sentinel flags, and its own normalized cwd (one server
+// per project location, see internal/ipc).
 //
 // The server is spawned on demand by the first client that finds no
 // listener, stays up while hooks keep arriving, and shuts itself down —
@@ -60,8 +66,11 @@ func (r *Runner) serverMain(ctx context.Context, inv *invocation, stderr io.Writ
 		_, _ = fmt.Fprintf(stderr, "agenthooks: server: resolving executable: %v\n", err)
 		return 1
 	}
-	addr, err := ipc.Resolve(exe, inv.preArgs)
+	addr, err := resolveAddress(exe, inv)
 	if err != nil {
+		// Covers a rejected --socket value (e.g. over the unix sun_path
+		// budget) as well as state-dir failures: a hard, loud setup error —
+		// the client side of the same mistake fails open instead.
 		_, _ = fmt.Fprintf(stderr, "agenthooks: server: %v\n", err)
 		return 1
 	}

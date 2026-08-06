@@ -29,6 +29,12 @@ func lockPath(dir, id, suffix string) string {
 	return filepath.Join(dir, "agenthooks-"+id+suffix)
 }
 
+// validateEndpoint vets an explicit --socket value. Named-pipe names have
+// no sun_path-style length constraint, so everything passes.
+func validateEndpoint(string) error {
+	return nil
+}
+
 // Listen creates the named pipe. Pipe instances vanish with their process,
 // so there is no stale-endpoint sweep here; a creation failure with a live
 // listener behind it maps to ErrAlreadyRunning.

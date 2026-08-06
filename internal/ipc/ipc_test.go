@@ -2,7 +2,9 @@ package ipc
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,22 +87,71 @@ func TestReadFrameTruncatedBody(t *testing.T) {
 }
 
 func TestIdentity(t *testing.T) {
-	base := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"})
+	base := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"}, "/work/proj")
 	if len(base) != 16 {
 		t.Fatalf("identity length = %d, want 16", len(base))
 	}
-	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"}); got != base {
+	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"}, "/work/proj"); got != base {
 		t.Errorf("identity must be deterministic: %s vs %s", got, base)
 	}
-	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/b.json"}); got == base {
+	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/b.json"}, "/work/proj"); got == base {
 		t.Errorf("distinct configs must get distinct identities")
 	}
-	if got := Identity("/other/binary", []string{"--config=/a.json"}); got == base {
+	if got := Identity("/other/binary", []string{"--config=/a.json"}, "/work/proj"); got == base {
 		t.Errorf("distinct binaries must get distinct identities")
 	}
+	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"}, "/work/other"); got == base {
+		t.Errorf("distinct locations must get distinct identities")
+	}
+	if got := Identity("/usr/local/bin/speakeasy-hooks", []string{"--config=/a.json"}, ""); got == base {
+		t.Errorf("the location-less identity must differ from a located one")
+	}
 	// The separator must keep the encoding injective across arg boundaries.
-	if Identity("/bin/x", []string{"ab", "c"}) == Identity("/bin/x", []string{"a", "bc"}) {
+	if Identity("/bin/x", []string{"ab", "c"}, "") == Identity("/bin/x", []string{"a", "bc"}, "") {
 		t.Errorf("arg boundaries must participate in the identity")
+	}
+	// ... and across the args/location boundary.
+	if Identity("/bin/x", []string{"a"}, "b") == Identity("/bin/x", []string{"a", "b"}, "") {
+		t.Errorf("a location must not collide with a trailing pre-sentinel flag")
+	}
+}
+
+func TestIdentityLocationlessFallbackIsStable(t *testing.T) {
+	// An empty location must reproduce the historic exe+preArgs bytes, so
+	// deployments without a usable working directory do not re-key their
+	// rendezvous across library upgrades.
+	h := sha256.New()
+	h.Write([]byte("/usr/local/bin/myhooks"))
+	h.Write([]byte{0})
+	h.Write([]byte("--config=/a.json"))
+	want := hex.EncodeToString(h.Sum(nil))[:16]
+	if got := Identity("/usr/local/bin/myhooks", []string{"--config=/a.json"}, ""); got != want {
+		t.Errorf("location-less identity = %s, want the plain exe+preArgs hash %s", got, want)
+	}
+}
+
+func TestLocation(t *testing.T) {
+	if got := Location(""); got != "" {
+		t.Errorf("empty cwd must stay empty, got %q", got)
+	}
+	// Nonexistent paths cannot resolve symlinks; cleaning still applies.
+	sep := string(filepath.Separator)
+	messy := filepath.Join(sep+"nonexistent-agenthooks-test", "proj") + sep + "." + sep + "sub" + sep + ".."
+	if got, want := Location(messy), filepath.Join(sep+"nonexistent-agenthooks-test", "proj"); got != want {
+		t.Errorf("Location(%q) = %q, want the cleaned path %q", messy, got, want)
+	}
+	// Symlinked and physical spellings of one directory must agree.
+	dir := t.TempDir()
+	physical := filepath.Join(dir, "real")
+	if err := os.Mkdir(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err) // e.g. unprivileged windows
+	}
+	if Location(link) != Location(physical) {
+		t.Errorf("Location must resolve symlinks: %q vs %q", Location(link), Location(physical))
 	}
 }
 
@@ -133,7 +184,7 @@ func TestResolveDerivesEndpointAndLocks(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Setenv("XDG_STATE_HOME", t.TempDir())
 	}
-	addr, err := Resolve("/usr/local/bin/myhooks", []string{"--config=/a.json"})
+	addr, err := Resolve("/usr/local/bin/myhooks", []string{"--config=/a.json"}, "/work/proj")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -159,12 +210,75 @@ func TestResolveDerivesEndpointAndLocks(t *testing.T) {
 		t.Errorf("server and spawn locks must differ: %+v", addr)
 	}
 
-	other, err := Resolve("/usr/local/bin/myhooks", []string{"--config=/b.json"})
+	other, err := Resolve("/usr/local/bin/myhooks", []string{"--config=/b.json"}, "/work/proj")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if other.Endpoint == addr.Endpoint {
 		t.Errorf("distinct configs must rendezvous on distinct endpoints")
+	}
+	elsewhere, err := Resolve("/usr/local/bin/myhooks", []string{"--config=/a.json"}, "/work/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elsewhere.Endpoint == addr.Endpoint {
+		t.Errorf("distinct locations must rendezvous on distinct endpoints")
+	}
+}
+
+func TestResolveEndpointOverride(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Setenv("XDG_STATE_HOME", t.TempDir())
+	}
+	explicit := `\\.\pipe\agenthooks-test-override`
+	if runtime.GOOS != "windows" {
+		// A short parent keeps the explicit path within the sun_path budget
+		// regardless of how deep the test's own TempDir nests.
+		dir, err := os.MkdirTemp("", "ahsock") //nolint:usetesting // t.TempDir paths can exceed the sun_path budget; this stays short
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		explicit = filepath.Join(dir, "s.sock")
+	}
+
+	addr, err := ResolveEndpoint(explicit)
+	if err != nil {
+		t.Fatalf("ResolveEndpoint: %v", err)
+	}
+	if addr.Endpoint != explicit {
+		t.Errorf("explicit endpoint must be used verbatim: %q, want %q", addr.Endpoint, explicit)
+	}
+	if addr.ServerLock == "" || addr.SpawnLock == "" || addr.ServerLock == addr.SpawnLock {
+		t.Errorf("locks must derive from the endpoint and differ: %+v", addr)
+	}
+	again, err := ResolveEndpoint(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != addr {
+		t.Errorf("resolution must be deterministic so client and server agree: %+v vs %+v", again, addr)
+	}
+
+	// The explicit rendezvous must not collide with any derived one for
+	// the same string (domain separation of the lock hash).
+	derived, err := Resolve(explicit, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.ServerLock == addr.ServerLock {
+		t.Errorf("explicit and derived rendezvous must not share lock files")
+	}
+}
+
+func TestResolveEndpointRejectsOverlongUnixPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes have no path-length constraint")
+	}
+	long := "/" + strings.Repeat("x", maxSocketPath) + "/server.sock"
+	_, err := ResolveEndpoint(long)
+	if err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Errorf("overlong socket path must be rejected with a clear error, got %v", err)
 	}
 }
 
@@ -173,7 +287,7 @@ func TestSocketPathLengthFallsBackToTempDir(t *testing.T) {
 		t.Skip("named pipes have no path-length constraint")
 	}
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), strings.Repeat("deep", 30)))
-	addr, err := Resolve("/usr/local/bin/myhooks", nil)
+	addr, err := Resolve("/usr/local/bin/myhooks", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +394,7 @@ func testAddress(t *testing.T) Address {
 	if runtime.GOOS != "windows" {
 		t.Setenv("XDG_STATE_HOME", t.TempDir())
 	}
-	addr, err := Resolve("/test/bin/agenthooks", []string{"--test-id=" + t.Name(), "--nonce=" + t.TempDir()})
+	addr, err := Resolve("/test/bin/agenthooks", []string{"--test-id=" + t.Name(), "--nonce=" + t.TempDir()}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

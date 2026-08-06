@@ -4,6 +4,7 @@ package ipc
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -35,6 +36,16 @@ func endpoint(dir, id string) string {
 
 func lockPath(dir, id, suffix string) string {
 	return filepath.Join(dir, "agenthooks-"+id+suffix)
+}
+
+// validateEndpoint vets an explicit --socket value: a unix socket path
+// over the sun_path budget must be rejected up front with a clear error,
+// not left to fail the bind or dial with a confusing OS one.
+func validateEndpoint(explicit string) error {
+	if len(explicit) > maxSocketPath {
+		return fmt.Errorf("ipc: socket path %q is %d bytes; unix socket paths must be at most %d bytes", explicit, len(explicit), maxSocketPath)
+	}
+	return nil
 }
 
 // Listen binds the endpoint. A socket file left behind by a crashed server

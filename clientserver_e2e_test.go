@@ -76,8 +76,13 @@ func TestClientAutoSpawnsDetachedServer(t *testing.T) {
 	// The detached server idles out on its own (1s idle timeout). Probe
 	// sparsely: every accepted connection — including a probe — counts as
 	// activity, so probing faster than the idle window would keep the
-	// server alive forever.
-	addr, err := ipc.Resolve(bin, nil)
+	// server alive forever. The rendezvous derivation must match the
+	// clients': they ran with this process's cwd as their location.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, err := ipc.Resolve(bin, nil, ipc.Location(cwd))
 	if err != nil {
 		t.Fatal(err)
 	}

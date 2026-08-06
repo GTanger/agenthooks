@@ -56,7 +56,7 @@ type Runner struct {
 	interceptors       []Interceptor
 	afterEvent         afterEvent
 	telemetryShutdown  func(context.Context) error
-	spawnServer        func(preArgs []string) error
+	spawnServer        func(preArgs []string, endpoint string) error
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
