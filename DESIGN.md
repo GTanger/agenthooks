@@ -518,7 +518,7 @@ control:
 
 ```
 mybinary agenthooks client --provider=claude-code   # per-hook process: forwards to the hook server, relays the decision (default install)
-mybinary agenthooks server [--idle-timeout=10m]     # long-running singleton hosting the pipeline (auto-spawned by client)
+mybinary agenthooks server [--idle-timeout=10m] [--socket=P]  # long-running singleton hosting the pipeline (auto-spawned by client)
 mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON — the direct single-process mode
 mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor-agent CLI (<2026-05-20): payload in argv
 mybinary agenthooks notify --provider=codex          # legacy codex notify: kebab-case JSON in argv[1]
@@ -539,12 +539,36 @@ Runtime responsibilities per mode:
   hosts the Runner across invocations: handlers, MCP/inventory caches,
   warm HTTP connections, and the opt-in telemetry recorder. The
   rendezvous is derived from the consumer identity (executable path +
-  the flags before the `agenthooks` sentinel, e.g. `--config=...`), so
-  distinct deployments get distinct servers (`internal/ipc`). No server?
-  The client re-execs itself as one (detached, spawn-lock serialized)
-  and retries for ~2 s; any failure past that fails open — a warning on
-  the debug log, exit 0 with no output, which providers read as "no
-  opinion". The server is a hard dependency of client mode: the client
+  the flags before the `agenthooks` sentinel, e.g. `--config=...`) plus
+  the client's normalized working directory, so distinct deployments —
+  and distinct project locations within one deployment — get distinct
+  servers, the LSP per-workspace model (`internal/ipc`; a missing cwd
+  degrades to the location-less exe+flags identity). Socket names embed
+  only the identity hash, never the location path, so they stay within
+  sun_path limits however deep the project nests. `--socket=<endpoint>`
+  on either mode bypasses the derivation entirely and uses the endpoint
+  verbatim (locks derive from a hash of it) — for external supervision
+  (e.g. a daemon running `mybinary --config=... agenthooks server
+  --socket=...`), tests, containers, or a deliberate machine-wide
+  server; supervisors should always pass `--socket` explicitly rather
+  than relying on the server's own cwd. An overlong unix socket path is
+  rejected loudly at server startup and fails open on the client. No
+  server? The client re-execs itself as one (detached, spawn-lock
+  serialized), handing over the endpoint it just resolved via
+  `--socket` — client and spawned server always agree on the rendezvous
+  without the server re-deriving it from its own, possibly different,
+  process state — and retries for ~2 s; any failure past that fails
+  open — a warning on the debug log, exit 0 with no output, which
+  providers read as "no opinion". Providers launch hook processes from
+  the session's project directory (Claude Code documents hooks running
+  in the session cwd with `CLAUDE_PROJECT_DIR` exported; Cursor uses
+  the workspace root; Gemini's hook cwd matches `GEMINI_CWD`), so the
+  location is stable within a session; if a provider ever fires hooks
+  from varying cwds mid-session, the worst case is multiple servers
+  with split cache warmth — correctness holds, because cross-invocation
+  state (dedup markers, backfill markers, MCP inventories) is
+  file-based and shared across servers. The server is a hard
+  dependency of client mode: the client
   never runs the pipeline itself, and `run` remains the supported direct
   single-process mode. The server early-acks non-gating events right after decode
   (processing continues async), shuts down after an idle period or on

@@ -637,17 +637,24 @@ Its lifecycle is owned by hook traffic, with telemetry riding along:
 
 - **Placement.** Generated configs install
   `mybinary [flags] agenthooks client --provider=X` as the hook command.
-  The client forwards each event over a per-consumer-identity unix socket
-  (Windows: named pipe) to `mybinary [flags] agenthooks server`; when no
-  server answers, the client re-execs itself as one (detached, spawn-lock
-  serialized) and retries. The server constructs the consumer's Runner —
-  including `WithTelemetry` — once, and hosts it across invocations:
-  handlers, caches, warm HTTP connections, and the recorder's batch
-  pipeline all live exactly as long as the server.
-- **Singleton.** One server per consumer identity (executable +
-  pre-sentinel flags such as `--config=...`), enforced by the endpoint
-  bind plus a `internal/filelock` server lock. Distinct configs get
-  distinct servers, so telemetry credentials never cross deployments.
+  The client forwards each event over a per-consumer-identity,
+  per-project-location unix socket (Windows: named pipe) to
+  `mybinary [flags] agenthooks server`; when no server answers, the
+  client re-execs itself as one (detached, spawn-lock serialized,
+  handed the resolved endpoint via `--socket` so both always agree on
+  the rendezvous) and retries. The server constructs the consumer's
+  Runner — including `WithTelemetry` — once, and hosts it across
+  invocations: handlers, caches, warm HTTP connections, and the
+  recorder's batch pipeline all live exactly as long as the server.
+- **Singleton.** One server per consumer identity and location
+  (executable + pre-sentinel flags such as `--config=...` + the
+  client's normalized working directory — one server per project, the
+  LSP per-workspace model; no usable cwd degrades to the location-less
+  identity), enforced by the endpoint bind plus a `internal/filelock`
+  server lock. Distinct configs get distinct servers, so telemetry
+  credentials never cross deployments; distinct project directories get
+  distinct servers, so cwd-dependent best-effort state (MCP config
+  discovery, inventories) is derived per project.
 - **Shutdown = flush.** The server shuts down — and calls
   `TelemetryRecorder.Shutdown`, which force-flushes the batch queue —
   on three triggers:
@@ -673,8 +680,12 @@ Its lifecycle is owned by hook traffic, with telemetry riding along:
 - **No external supervision.** Nothing needs provisioning, boot
   registration, or a service manager: the server exists exactly when hook
   traffic exists. (Consumers running under external supervision anyway —
-  e.g. a device agent — can keep a server warm by invoking the verb
-  directly; that is an optimization, not a requirement.)
+  e.g. a device agent — can keep a server warm by running
+  `mybinary [flags] agenthooks server --socket=<endpoint>`; supervisors
+  should always pin the rendezvous with an explicit `--socket` rather
+  than relying on the supervised server's own working directory, and
+  point clients at it with the same flag. That is an optimization, not
+  a requirement.)
 
 **Encoding note:** `otlploghttp` emits OTLP **protobuf**
 (`application/x-protobuf`) — the Go OTLP/HTTP exporters do not offer a JSON
