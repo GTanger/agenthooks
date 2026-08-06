@@ -3,19 +3,20 @@ package agenthooks
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
 
 // invocation is the parsed argv contract baked into generated configs:
 //
-//	mybinary agenthooks run    --provider=claude-code            # stdin JSON
+//	mybinary agenthooks client --provider=claude-code            # stdin JSON, via the hook server
+//	mybinary agenthooks run    --provider=claude-code            # stdin JSON, in-process
 //	mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor CLI
 //	mybinary agenthooks notify --provider=codex                  # legacy codex notify (argv JSON)
 //	mybinary agenthooks serve  --provider=opencode               # NDJSON daemon for the shim
+//	mybinary agenthooks server [--idle-timeout=10m]              # hook server (auto-spawned by client)
 type invocation struct {
-	mode        string // "run", "notify", "serve"
+	mode        string // "run", "notify", "serve", "server", "client"
 	provider    Provider
 	variant     Variant
 	confidence  DetectionConfidence
@@ -23,6 +24,16 @@ type invocation struct {
 	payload     string
 	timeout     time.Duration
 	filter      *ToolMatcher
+	// raw is the argv exactly as received: the client forwards it to the
+	// server, which re-parses it for the per-hook flags and the notify
+	// verb's argv payload.
+	raw []string
+	// preArgs are the consumer flags that precede the "agenthooks" sentinel
+	// (e.g. --config=/path). They define the server identity (internal/ipc)
+	// and are replayed when the client re-execs itself as the server.
+	preArgs []string
+	// idleTimeout overrides the server's idle shutdown (server mode only).
+	idleTimeout time.Duration
 }
 
 var validProviders = map[Provider]bool{
@@ -35,22 +46,24 @@ var validProviders = map[Provider]bool{
 }
 
 func parseArgs(args []string) (*invocation, error) {
-	inv := &invocation{mode: "run"}
+	inv := &invocation{mode: "run", raw: args}
 	rest := args
 	// Generated configs put consumer-binary flags before the sentinel
 	// ("mybinary --config=x agenthooks serve --provider=opencode"), so the
 	// sentinel and mode are located anywhere in argv, not just at the front.
 	// Everything before the sentinel belongs to the consumer and is dropped
-	// from agenthooks parsing.
+	// from agenthooks parsing — but kept as preArgs: it names the consumer
+	// deployment, which is what the client/server rendezvous keys on.
 	for i, a := range rest {
 		if a == "agenthooks" {
+			inv.preArgs = rest[:i]
 			rest = rest[i+1:]
 			break
 		}
 	}
 	if len(rest) > 0 {
 		switch rest[0] {
-		case "run", "notify", "serve":
+		case "run", "notify", "serve", "server", "client":
 			inv.mode = rest[0]
 			rest = rest[1:]
 		}
@@ -84,6 +97,12 @@ func parseArgs(args []string) (*invocation, error) {
 				return nil, err
 			}
 			inv.filter = &m
+		case strings.HasPrefix(a, "--idle-timeout="):
+			d, err := time.ParseDuration(strings.TrimPrefix(a, "--idle-timeout="))
+			if err != nil {
+				return nil, fmt.Errorf("agenthooks: bad --idle-timeout: %w", err)
+			}
+			inv.idleTimeout = d
 		case strings.HasPrefix(a, "--"):
 			// Unknown flags are tolerated for forward compatibility with
 			// newer generated configs driving older library versions.
@@ -98,11 +117,14 @@ func parseArgs(args []string) (*invocation, error) {
 // detectProvider resolves the invoking provider. Flag-first is a hard rule:
 // Codex and Cursor deliberately export CLAUDE_* compat vars (quirk #20), so
 // env sniffing alone is insufficient. Shape sniffing is the last resort.
-func detectProvider(inv *invocation, payload []byte) (Provider, DetectionConfidence) {
+// getenv abstracts the environment: os.Getenv for in-process runs, the
+// request's forwarded snapshot when the server handles a client's hook (the
+// server's own environment describes whoever spawned it, not this event).
+func detectProvider(inv *invocation, payload []byte, getenv func(string) string) (Provider, DetectionConfidence) {
 	if inv.provider != "" {
 		return inv.provider, DetectionConfig
 	}
-	if p, ok := detectFromEnv(); ok {
+	if p, ok := detectFromEnv(getenv); ok {
 		return p, DetectionEnv
 	}
 	if p, ok := detectFromShape(payload); ok {
@@ -111,21 +133,21 @@ func detectProvider(inv *invocation, payload []byte) (Provider, DetectionConfide
 	return "", ""
 }
 
-func detectFromEnv() (Provider, bool) {
+func detectFromEnv(getenv func(string) string) (Provider, bool) {
 	// Provider-unique vars first; CLAUDE_* last because it is cross-set.
-	if os.Getenv("CURSOR_VERSION") != "" || os.Getenv("CURSOR_TRACE_ID") != "" || os.Getenv("CURSOR_AGENT") != "" {
+	if getenv("CURSOR_VERSION") != "" || getenv("CURSOR_TRACE_ID") != "" || getenv("CURSOR_AGENT") != "" {
 		return ProviderCursor, true
 	}
-	if os.Getenv("CODEX_HOME") != "" || os.Getenv("CODEX_SANDBOX") != "" {
+	if getenv("CODEX_HOME") != "" || getenv("CODEX_SANDBOX") != "" {
 		return ProviderCodex, true
 	}
-	if os.Getenv("GEMINI_CWD") != "" || os.Getenv("GEMINI_CLI") != "" {
+	if getenv("GEMINI_CWD") != "" || getenv("GEMINI_CLI") != "" {
 		return ProviderGemini, true
 	}
-	if os.Getenv("OPENCODE_SERVER") != "" || os.Getenv("OPENCODE") != "" {
+	if getenv("OPENCODE_SERVER") != "" || getenv("OPENCODE") != "" {
 		return ProviderOpenCode, true
 	}
-	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
+	if getenv("CLAUDE_PROJECT_DIR") != "" || getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
 	}
 	return "", false
@@ -182,18 +204,18 @@ func isCamel(s string) bool {
 
 // detectVariant encodes the runtime tricks that distinguish provider
 // sub-flavors (§6). Best-effort by design; "" means unknown/default.
-func detectVariant(p Provider) Variant {
+func detectVariant(p Provider, getenv func(string) string) Variant {
 	switch p {
 	case ProviderClaudeCode:
-		if os.Getenv("CLAUDE_CODE_REMOTE") != "" {
+		if getenv("CLAUDE_CODE_REMOTE") != "" {
 			return VariantRemote
 		}
 		// cowork: cmux-managed project dirs are the observable signature.
-		if dir := os.Getenv("CLAUDE_PROJECT_DIR"); strings.Contains(dir, "/cmux/") || strings.Contains(dir, "/cowork/") {
+		if dir := getenv("CLAUDE_PROJECT_DIR"); strings.Contains(dir, "/cmux/") || strings.Contains(dir, "/cowork/") {
 			return VariantCowork
 		}
 	case ProviderCursor:
-		if os.Getenv("CURSOR_AGENT") != "" {
+		if getenv("CURSOR_AGENT") != "" {
 			return VariantCLI
 		}
 	}
