@@ -15,9 +15,9 @@ import (
 )
 
 func TestMCPInventoryCompletesBeforeFirstTool(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := isolateHome(t)
 	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".claude.json"), []byte(`{"mcpServers":{"remote":{"url":"https://mcp.example.com"}}}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"mcpServers":{"remote":{"url":"https://mcp.example.com"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -25,17 +25,17 @@ func TestMCPInventoryCompletesBeforeFirstTool(t *testing.T) {
 	r := New(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
 	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
 		if len(event.Servers) != 1 || event.Servers[0].Name != "remote" {
-			t.Fatalf("unexpected inventory: %#v", event.Servers)
+			return fmt.Errorf("unexpected inventory: %#v", event.Servers)
 		}
 		if !event.Complete {
-			t.Fatal("config-only inventory must be complete when CLI fallback is disabled")
+			return errors.New("config-only inventory must be complete when CLI fallback is disabled")
 		}
 		reported = true
 		return nil
 	})
 	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
 		if !reported {
-			t.Fatal("inventory handler must complete before the tool handler starts")
+			return NoDecision(), errors.New("inventory handler must complete before the tool handler starts")
 		}
 		return NoDecision(), nil
 	})
