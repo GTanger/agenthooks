@@ -1,0 +1,188 @@
+// Package ipc is the transport between the per-hook client process
+// (`mybinary agenthooks client`) and the long-running hook server
+// (`mybinary agenthooks server`): endpoint derivation from the consumer
+// identity, length-prefixed JSON framing, and the request/response types.
+// Unix domain sockets everywhere except Windows, which uses named pipes.
+//
+// The package is internal on purpose: the wire is an implementation detail
+// of the runner's client/server modes, versioned by ProtocolVersion, not a
+// public API.
+package ipc
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"time"
+)
+
+// ProtocolVersion is the framing/schema version. A server that receives a
+// request with a different version answers with an error frame, which makes
+// the client fall back to its in-process pipeline.
+const ProtocolVersion = 1
+
+// MaxFrameBytes bounds one frame. The hook payload cap is 32 MiB; base64
+// (JSON []byte encoding) inflates it by 4/3, and the envelope adds argv and
+// environment. 64 MiB leaves comfortable headroom without letting a corrupt
+// length prefix allocate unbounded memory.
+const MaxFrameBytes = 64 << 20
+
+// Request is one hook invocation forwarded by the client: the client's full
+// argv (the server re-parses it for --provider/--timeout/--filter and the
+// payload-carrying positionals of the notify verb), the raw stdin payload,
+// and the slice of process state the pipeline needs (allowlisted environment
+// variables, working directory).
+type Request struct {
+	V int `json:"v"`
+	// Build fingerprints the client's executable (path, size, mtime). On
+	// mismatch with the server's own fingerprint the server finishes
+	// in-flight work, flushes telemetry, and exits, so the next spawn runs
+	// the new binary — the LSP-style upgrade story.
+	Build string            `json:"build,omitempty"`
+	Argv  []string          `json:"argv,omitempty"`
+	Stdin []byte            `json:"stdin,omitempty"`
+	Env   map[string]string `json:"env,omitempty"`
+	CWD   string            `json:"cwd,omitempty"`
+}
+
+// Response carries the provider-dialect wire output back to the client,
+// which relays it verbatim: stdout bytes, stderr bytes (Kimi's blocking
+// mechanism is exit 2 with the reason on stderr), and the exit code. A
+// non-empty Error means the server could not process the request at the
+// protocol level; the client treats it like an unreachable server and runs
+// in-process.
+type Response struct {
+	V        int    `json:"v"`
+	Error    string `json:"error,omitempty"`
+	Stdout   []byte `json:"stdout,omitempty"`
+	Stderr   []byte `json:"stderr,omitempty"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// ErrAlreadyRunning reports that another server already owns the endpoint.
+var ErrAlreadyRunning = errors.New("ipc: a server is already listening on this endpoint")
+
+// WriteFrame writes one length-prefixed JSON frame: a 4-byte big-endian
+// length followed by the JSON body.
+func WriteFrame(w io.Writer, v any) error {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("ipc: encoding frame: %w", err)
+	}
+	if len(body) > MaxFrameBytes {
+		return fmt.Errorf("ipc: frame of %d bytes exceeds the %d-byte cap", len(body), MaxFrameBytes)
+	}
+	var prefix [4]byte
+	binary.BigEndian.PutUint32(prefix[:], uint32(len(body))) //nolint:gosec // bounded by the MaxFrameBytes check above
+	if _, err := w.Write(prefix[:]); err != nil {
+		return fmt.Errorf("ipc: writing frame length: %w", err)
+	}
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("ipc: writing frame body: %w", err)
+	}
+	return nil
+}
+
+// ReadFrame reads one length-prefixed JSON frame into v.
+func ReadFrame(r io.Reader, v any) error {
+	var prefix [4]byte
+	if _, err := io.ReadFull(r, prefix[:]); err != nil {
+		return fmt.Errorf("ipc: reading frame length: %w", err)
+	}
+	n := binary.BigEndian.Uint32(prefix[:])
+	if n > MaxFrameBytes {
+		return fmt.Errorf("ipc: frame of %d bytes exceeds the %d-byte cap", n, MaxFrameBytes)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return fmt.Errorf("ipc: reading frame body: %w", err)
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("ipc: decoding frame: %w", err)
+	}
+	return nil
+}
+
+// Identity fingerprints one consumer deployment: the executable path plus
+// the consumer flags that precede the "agenthooks" sentinel in the hook
+// command (e.g. --config=/path/speakeasy.json). Distinct binaries or
+// distinct configs get distinct identities — and therefore distinct
+// servers; the per-hook flags after the sentinel (--provider, --timeout)
+// deliberately do not participate.
+func Identity(exe string, preArgs []string) string {
+	h := sha256.New()
+	h.Write([]byte(exe))
+	for _, a := range preArgs {
+		h.Write([]byte{0})
+		h.Write([]byte(a))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// BuildStamp fingerprints the executable file behind path — path, size, and
+// mtime — cheaply enough to compute per hook invocation. Replacing the
+// binary on disk changes the stamp, which is what triggers the server's
+// upgrade shutdown. Returns "" when the file cannot be inspected; empty
+// stamps never trigger a mismatch.
+func BuildStamp(exe string) string {
+	fi, err := os.Stat(exe)
+	if err != nil {
+		return ""
+	}
+	h := sha256.New()
+	h.Write([]byte(exe))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatInt(fi.Size(), 10)))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.FormatInt(fi.ModTime().UnixNano(), 10)))
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// Address is the resolved rendezvous for one consumer identity.
+type Address struct {
+	// ID is the consumer identity hash (see Identity).
+	ID string
+	// Endpoint is the unix socket path, or the named-pipe name on Windows.
+	Endpoint string
+	// ServerLock is held for the server's lifetime — belt-and-braces
+	// singleton enforcement alongside the endpoint bind itself.
+	ServerLock string
+	// SpawnLock serializes client auto-spawns so a thundering herd of hook
+	// invocations starts one server, not dozens.
+	SpawnLock string
+}
+
+// Resolve derives the Address for a consumer identity and ensures the state
+// directory exists (0700).
+func Resolve(exe string, preArgs []string) (Address, error) {
+	id := Identity(exe, preArgs)
+	dir, err := stateDir()
+	if err != nil {
+		return Address{}, fmt.Errorf("ipc: resolving state dir: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Address{}, fmt.Errorf("ipc: creating state dir: %w", err)
+	}
+	return Address{
+		ID:         id,
+		Endpoint:   endpoint(dir, id),
+		ServerLock: lockPath(dir, id, ".lock"),
+		SpawnLock:  lockPath(dir, id, ".spawn"),
+	}, nil
+}
+
+// dialProbe reports whether something answers on the endpoint right now.
+func dialProbe(endpoint string) bool {
+	conn, err := Dial(endpoint, 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
