@@ -120,6 +120,14 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 	return cached.Entries, cached.HasSnapshot
 }
 
+func (r *Runner) cachedMCPListSnapshot(key string) ([]mcpConfigEntry, bool) {
+	cached := readMCPListCache(filepath.Join(r.mcpListCacheDir(), key+".json"))
+	if !mcpListCacheFresh(cached, r.mcpListNow()) {
+		return nil, false
+	}
+	return cached.Entries, cached.HasSnapshot
+}
+
 func (r *Runner) mcpListCacheDir() string {
 	if r.dedupDir != "" {
 		return filepath.Join(r.dedupDir, "agenthooks-mcplist")

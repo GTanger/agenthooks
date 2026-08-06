@@ -346,11 +346,14 @@ type MCPServer struct {
 	Command string
 }
 
-// MCPInventoryEvent reports the effective MCP server snapshot independently
-// from any provider-native session event.
+// MCPInventoryEvent reports the known MCP server snapshot independently from
+// any provider-native session event. Complete is false when provider discovery
+// failed or is still in progress and Servers contains only known
+// explicit/config-file entries.
 type MCPInventoryEvent struct {
 	Event
-	Servers []MCPServer
+	Servers  []MCPServer
+	Complete bool
 }
 
 type PromptEvent struct {

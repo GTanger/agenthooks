@@ -27,6 +27,9 @@ func TestMCPInventoryCompletesBeforeFirstTool(t *testing.T) {
 		if len(event.Servers) != 1 || event.Servers[0].Name != "remote" {
 			t.Fatalf("unexpected inventory: %#v", event.Servers)
 		}
+		if !event.Complete {
+			t.Fatal("config-only inventory must be complete when CLI fallback is disabled")
+		}
 		reported = true
 		return nil
 	})
@@ -67,6 +70,144 @@ func TestMCPInventoryRetriesAfterHandlerFailure(t *testing.T) {
 	runWith(t, r, claudeArgs(), payload)
 	if attempts != 2 {
 		t.Fatalf("inventory attempts = %d, want 2", attempts)
+	}
+}
+
+func TestMCPInventorySessionStartDoesNotWaitForProbe(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	stateDir := t.TempDir()
+	r := New(WithDedupDir(stateDir))
+	inventories := make(chan *MCPInventoryEvent, 2)
+	toolStarted := make(chan struct{}, 1)
+	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
+		inventories <- event
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		toolStarted <- struct{}{}
+		return NoDecision(), nil
+	})
+
+	launch := currentClaudeLaunchContext(cwd)
+	cacheDir := filepath.Join(stateDir, "agenthooks-mcplist")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, launch.cacheKey()+".json")
+	release, locked, err := tryMCPListLock(cachePath + ".lock")
+	if err != nil || !locked {
+		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
+	sessionPayload := []byte(fmt.Sprintf(
+		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"SessionStart","source":"startup"}`,
+		cwd,
+	))
+	sessionDone := make(chan struct{})
+	go func() {
+		runWith(t, r, claudeArgs(), sessionPayload)
+		close(sessionDone)
+	}()
+	select {
+	case <-sessionDone:
+	case <-time.After(500 * time.Millisecond):
+		release()
+		released = true
+		<-sessionDone
+		t.Fatal("SessionStart waited for the in-flight MCP probe")
+	}
+	var first *MCPInventoryEvent
+	select {
+	case first = <-inventories:
+	case <-time.After(time.Second):
+		t.Fatal("SessionStart did not emit an MCP inventory")
+	}
+	if first.Complete || len(first.Servers) != 1 || first.Servers[0].Name != "configured" {
+		t.Fatalf("SessionStart inventory = %+v", first)
+	}
+
+	toolPayload := []byte(fmt.Sprintf(
+		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__plugin__run","tool_input":{}}`,
+		cwd,
+	))
+	toolDone := make(chan struct{})
+	go func() {
+		runWith(t, r, claudeArgs(), toolPayload)
+		close(toolDone)
+	}()
+	select {
+	case <-toolDone:
+		t.Fatal("first MCP hook did not wait for the in-flight probe")
+	case <-time.After(100 * time.Millisecond):
+	}
+	writeMCPListCache(cachePath, mcpListCache{
+		CheckedAt:   time.Now().Unix(),
+		Entries:     []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}},
+		HasSnapshot: true,
+	})
+	release()
+	released = true
+	select {
+	case <-toolDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first MCP hook did not resume after the inventory completed")
+	}
+	var second *MCPInventoryEvent
+	select {
+	case second = <-inventories:
+	case <-time.After(time.Second):
+		t.Fatal("first MCP hook did not emit the completed inventory")
+	}
+	if !second.Complete || len(second.Servers) != 2 {
+		t.Fatalf("first MCP hook inventory = %+v", second)
+	}
+	select {
+	case <-toolStarted:
+	default:
+		t.Fatal("tool handler did not run after the complete inventory handler")
+	}
+}
+
+func TestMCPInventoryPreservesClaudeConfigAfterProbeFailure(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "")
+	writeConfig(t, fake.exitFile, "1")
+	r := mcpTestRunner(t)
+	entries, complete := r.effectiveMCPInventory(&Event{
+		Provider: ProviderClaudeCode,
+		Session:  SessionInfo{CWD: cwd},
+	}, true)
+	if complete || len(entries) != 1 || entries[0].Name != "configured" {
+		t.Fatalf("Claude failed-probe inventory = %+v complete=%v", entries, complete)
+	}
+}
+
+func TestMCPInventoryPreservesCodexConfigAfterProbeFailure(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.configured]
+url = "https://configured.example.com/mcp"
+`)
+	installFakeCodex(t, "not-json")
+	launch := parseCodexLaunchArgs([]string{"codex"}, cwd)
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	entries, complete := r.effectiveMCPInventory(&Event{
+		Provider: ProviderCodex,
+		Session:  SessionInfo{CWD: cwd},
+	}, true)
+	if complete || len(entries) != 1 || entries[0].Name != "configured" {
+		t.Fatalf("Codex failed-probe inventory = %+v complete=%v", entries, complete)
 	}
 }
 

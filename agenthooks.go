@@ -387,6 +387,19 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			deadline = defaultDeadline
 		}
 	}
+	// Inventory is its own event with its own handler deadline. SessionStart
+	// uses only a ready cache plus cheap explicit/config reads; the first MCP
+	// gate waits for provider discovery and delivery before its handler starts.
+	tool := toolOf(typed)
+	if shouldReportMCPInventory(base, tool) {
+		inventoryCtx, inventoryCancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+		err := r.reportMCPInventory(inventoryCtx, base, base.Kind != KindSessionStart)
+		inventoryCancel()
+		if err != nil {
+			r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
+		}
+	}
+
 	hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
 	defer cancel()
 
@@ -398,18 +411,6 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			r.notePromptSeen(base, pe.Prompt)
 		} else if promptImplied(base.Kind) {
 			r.maybeBackfillPrompt(hctx, base)
-		}
-	}
-
-	// Inventory is its own event, but ordering is strict: SessionStart reports
-	// it eagerly and the first pre-tool hook retries synchronously if that
-	// report did not complete. The tool handler never races the inventory
-	// handler or its downstream response.
-	tool := toolOf(typed)
-	if base.Kind == KindSessionStart || base.NativeName == "ConfigChange" ||
-		((base.Kind == KindToolPre || base.Kind == KindPermission) && tool != nil && tool.MCP != nil) {
-		if err := r.reportMCPInventory(hctx, base); err != nil {
-			r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
 		}
 	}
 
