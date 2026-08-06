@@ -23,8 +23,8 @@ import (
 )
 
 // ProtocolVersion is the framing/schema version. A server that receives a
-// request with a different version answers with an error frame, which makes
-// the client fall back to its in-process pipeline.
+// request with a different version answers with an error frame, which the
+// client fails open on (exit 0, no output) like any other server failure.
 const ProtocolVersion = 1
 
 // MaxFrameBytes bounds one frame. The hook payload cap is 32 MiB; base64
@@ -62,8 +62,8 @@ type Request struct {
 // which relays it verbatim: stdout bytes, stderr bytes (Kimi's blocking
 // mechanism is exit 2 with the reason on stderr), and the exit code. A
 // non-empty Error means the server could not process the request at the
-// protocol level; the client treats it like an unreachable server and runs
-// in-process.
+// protocol level; the client treats it like an unreachable server and
+// fails open (exit 0, no output).
 type Response struct {
 	V        int    `json:"v"`
 	Error    string `json:"error,omitempty"`

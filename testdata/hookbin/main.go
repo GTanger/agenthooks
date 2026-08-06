@@ -2,8 +2,8 @@
 // end-to-end test (clientserver_e2e_test.go): a minimal consumer binary
 // whose tool.pre handler denies and appends its process id to
 // $HOOKBIN_LOG. Two client invocations answered by the same pid prove the
-// decisions came from one long-running auto-spawned server rather than two
-// in-process fallbacks.
+// decisions came from one long-running auto-spawned server rather than
+// two independently spawned servers.
 package main
 
 import (

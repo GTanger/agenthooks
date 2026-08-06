@@ -330,8 +330,9 @@ func mergeManagedJSON(existing, rendered []byte) ([]byte, error) {
 // the argv contract (--provider, --timeout) and the in-process --filter for
 // dialects that can't express the matcher. The verb is `client`: the hook
 // process forwards the event to the long-running hook server (auto-spawned
-// on first use) and relays its decision; when no server can be reached it
-// runs the same pipeline in-process, so behavior degrades to `run`.
+// on first use) and relays its decision; when no server can be reached the
+// client fails open (exit 0, no output) rather than running the pipeline
+// itself.
 func hookCommand(m Manifest, p agenthooks.Provider, spec HookSpec) string {
 	parts := make([]string, 0, len(m.Command)+5)
 	for _, c := range m.Command {

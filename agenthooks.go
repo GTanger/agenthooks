@@ -303,7 +303,7 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "server":
 		return r.serverMain(ctx, inv, stderr)
 	case "client":
-		return r.clientMain(ctx, inv, stdin, stdout, stderr)
+		return r.clientMain(inv, stdin, stdout, stderr)
 	}
 	return r.runEvent(ctx, inv, r.readPayload(inv, stdin), runOpts{getenv: os.Getenv}, stdout, stderr)
 }
@@ -346,8 +346,8 @@ func gatingKind(k EventKind) bool {
 	return false
 }
 
-// runEvent is the single-event pipeline behind the run, notify, and client
-// (fallback and server-side) paths: detect → decode → dispatch → encode,
+// runEvent is the single-event pipeline behind the run, notify, and
+// server-side paths: detect → decode → dispatch → encode,
 // with the response written to stdout/stderr and the exit code returned.
 func (r *Runner) runEvent(ctx context.Context, inv *invocation, payload []byte, opts runOpts, stdout, stderr io.Writer) int {
 	provider, conf := detectProvider(inv, payload, opts.getenv)

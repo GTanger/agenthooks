@@ -1,7 +1,6 @@
 package agenthooks
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -18,17 +17,18 @@ import (
 // consumer-identity socket (spawning the server first if none answers), and
 // relays the server's stdout/stderr/exit code back to the provider.
 //
-// The server is an optimization, never a dependency: any failure — no
-// server, spawn blocked, connect timeout, protocol mismatch, truncated
-// response — degrades to running the exact same pipeline in-process, which
-// is byte-for-byte today's `run` behavior. Decisions never wait on server
-// health; only the warm caches and in-process telemetry do.
+// In client mode the server is a hard dependency. When it cannot answer —
+// no server, spawn blocked or failed, connect timeout, protocol mismatch,
+// truncated response, error frame — the client fails open immediately: a
+// warning on the debug log, nothing on stdout/stderr, exit 0, which every
+// provider dialect reads as "no opinion". The pipeline never runs in this
+// process; `run` remains the supported direct single-process mode.
 
 const (
 	// clientDialTimeout bounds one connection attempt.
 	clientDialTimeout = 250 * time.Millisecond
 	// clientSpawnBudget bounds the whole connect-spawn-reconnect dance
-	// before the client gives up and runs in-process.
+	// before the client gives up and fails open.
 	clientSpawnBudget = 2 * time.Second
 	// clientResponseSlack rides on top of the hook deadline when waiting
 	// for the server's response.
@@ -51,20 +51,25 @@ var forwardedEnv = []string{
 }
 
 // clientMain implements the `agenthooks client` argv mode.
-func (r *Runner) clientMain(ctx context.Context, inv *invocation, stdin io.Reader, stdout, stderr io.Writer) int {
+func (r *Runner) clientMain(inv *invocation, stdin io.Reader, stdout, stderr io.Writer) int {
 	payload := r.readPayload(inv, stdin)
 	resp, err := r.callServer(inv, payload)
-	if err == nil {
-		if len(resp.Stdout) > 0 {
-			_, _ = stdout.Write(resp.Stdout)
-		}
-		if len(resp.Stderr) > 0 {
-			_, _ = stderr.Write(resp.Stderr)
-		}
-		return resp.ExitCode
+	if err != nil {
+		// Fail open, immediately: nothing on stdout/stderr, exit 0 — the
+		// "no opinion" shape in every provider dialect. A non-zero exit or
+		// error text would read as a block or a hook failure to providers,
+		// and running the pipeline in this process would hide server
+		// breakage behind a silent degraded mode.
+		r.logger.Warn("agenthooks: hook server unavailable; failing open", "error", err)
+		return 0
 	}
-	r.logger.Warn("agenthooks: hook server unavailable; running in-process", "error", err)
-	return r.runEvent(ctx, inv, payload, runOpts{getenv: os.Getenv}, stdout, stderr)
+	if len(resp.Stdout) > 0 {
+		_, _ = stdout.Write(resp.Stdout)
+	}
+	if len(resp.Stderr) > 0 {
+		_, _ = stderr.Write(resp.Stderr)
+	}
+	return resp.ExitCode
 }
 
 // callServer performs one framed request/response exchange, spawning the
@@ -101,9 +106,8 @@ func (r *Runner) callServer(inv *invocation, payload []byte) (*ipc.Response, err
 	}
 
 	// The response can legitimately take as long as the hook deadline (the
-	// server runs the same policy timeouts run mode would); past that plus
-	// slack, falling back in-process could still answer before the provider
-	// gives up on us.
+	// server runs the same policy timeouts run mode would); the slack past
+	// that covers frame transit before the client gives up and fails open.
 	wait := defaultDeadline
 	if inv.timeout > 0 {
 		wait = inv.timeout

@@ -168,8 +168,8 @@ pseudo trace IDs (§4.4). No new correlation ID is introduced.
 - **N4** — Per-record durability. There is no disk spool: the hook
   server's memory is the buffer and its shutdown flush points (§4.7) are
   the durability boundary. Records buffered in a server that crashes —
-  or recorded on the client's rare in-process fallback path, whose
-  process exits before a batch ships — are lost, and that is accepted:
+  or recorded in a per-hook process (plain `run`), which exits before a
+  batch ships — are lost, and that is accepted:
   telemetry is best-effort observability, and the enforcement rail (§5.1)
   carries everything decision-critical.
 - **N5** — Auth/login flows. The library takes endpoint + headers as config;
@@ -311,11 +311,12 @@ serves every argv mode, and the recorder only becomes meaningful in the
 mode that lives long enough to ship — the **hook server**
 (`mybinary agenthooks server`), the singleton the per-hook
 `agenthooks client` forwards events to and auto-spawns on demand (§4.7).
-When the client falls back to its in-process pipeline (server unreachable),
-the recorder is constructed but the process exits before a batch ships;
-that loss is accepted (N4). Nothing needs external supervision or
-provisioning: the server is spawned by hook traffic and retires itself
-when idle.
+When the server is unreachable the client fails open (exit 0, no output)
+without running the pipeline, so no record is produced on that path at
+all; a per-hook `run` process constructs the recorder but exits before a
+batch ships, and that loss is accepted (N4). Nothing needs external
+supervision or provisioning: the server is spawned by hook traffic and
+retires itself when idle.
 
 #### Dependencies: the OTel-Go SDK, configured for this shape
 
@@ -387,8 +388,8 @@ recorder builds an OTel `log.Record` and `Emit`s it through the package's
 the OTLP/HTTP exporter** (§4.5) — so the call is wrapped in the same panic
 guard as observers and bounded: **one in-memory enqueue**, no I/O, no
 network, no retries on the critical path. The tap fires identically in
-every execution mode (server-handled requests, the client's in-process
-fallback, plain `run`, the OpenCode serve loop); what differs is only
+every execution mode that runs the pipeline (server-handled requests,
+plain `run`, the OpenCode serve loop); what differs is only
 whether the process lives long enough for the batch to ship (§4.7, N4).
 
 `Runner.Decide` (the embedded entry point) does **not** record telemetry:
@@ -600,8 +601,8 @@ the hook server:
   the queue or the export request.
 - **Flush points:** the server calls `Recorder.Shutdown` — which force-
   flushes the queue — on idle shutdown, on SIGINT/SIGTERM, and before a
-  version-upgrade exit (§4.7). A per-hook process (client fallback, plain
-  `run`) exits without a flush; those records are lost by design (N4).
+  version-upgrade exit (§4.7). A per-hook process (plain `run`) exits
+  without a flush; those records are lost by design (N4).
 - **Retry:** transient export failures (network down, 5xx, 429 with
   `Retry-After`) are retried by the SDK exporter's built-in policy;
   records survive retries in memory only. Endpoint downtime longer than
@@ -663,11 +664,12 @@ Its lifecycle is owned by hook traffic, with telemetry riding along:
      respawn runs the new binary — the LSP-style upgrade story. The
      rendezvous (socket + lock) is released *before* the final flush so
      the replacement server can bind immediately.
-- **Fallback path.** If the client cannot reach or spawn a server within
-  its ~2 s budget, it runs the identical pipeline in-process (today's
-  `run` behavior). The tap still fires; the batch almost certainly does
-  not ship before exit. Decisions are never affected; telemetry loss on
-  this path is accepted (N4).
+- **No fallback path.** If the client cannot reach or spawn a server
+  within its ~2 s budget, it fails open — exit 0 with no output, a
+  warning on the debug log — without running the pipeline: the server is
+  a hard dependency of client mode. No record is produced for such an
+  event; the gap shows up server-side as missing traffic rather than as
+  a silent degraded mode.
 - **No external supervision.** Nothing needs provisioning, boot
   registration, or a service manager: the server exists exactly when hook
   traffic exists. (Consumers running under external supervision anyway —
@@ -708,9 +710,9 @@ retires itself when idle.
   on this rail — the enforcement rail owns anything that must not be
   silently lost.
 - The server itself is hook infrastructure, not telemetry infrastructure:
-  a server crash degrades hooks to the in-process fallback (decisions
-  unaffected) and telemetry to per-process best-effort until the next
-  spawn.
+  after a server crash, in-flight clients fail open and the next hook
+  invocation respawns the server; hook events in that window produce no
+  records.
 
 ### 4.9 Positioning vs Claude Code's native OTEL events (dual-rail)
 

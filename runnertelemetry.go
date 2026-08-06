@@ -52,9 +52,9 @@ type TelemetryRecorder interface {
 // The recorder batches in process and ships over OTLP/HTTP in the
 // background, so it is only meaningful in a long-lived process: the hook
 // server (`mybinary agenthooks server`), which flushes it on idle shutdown
-// and on signals. In a per-hook process (the client's in-process fallback,
-// plain `run`) the process usually exits before a batch ships — telemetry
-// there is best-effort by design and the loss is accepted.
+// and on signals. In a per-hook process (plain `run`) the process usually
+// exits before a batch ships — telemetry there is best-effort by design
+// and the loss is accepted.
 //
 // Opt-in and fail-open by construction — without the option nothing
 // changes; with it, a recorder failure degrades to a logged warning, never

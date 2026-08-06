@@ -519,7 +519,7 @@ control:
 ```
 mybinary agenthooks client --provider=claude-code   # per-hook process: forwards to the hook server, relays the decision (default install)
 mybinary agenthooks server [--idle-timeout=10m]     # long-running singleton hosting the pipeline (auto-spawned by client)
-mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON — the client's in-process fallback path
+mybinary agenthooks run    --provider=claude-code   # process-per-event, stdin JSON — the direct single-process mode
 mybinary agenthooks run    --provider=cursor --argv-payload  # legacy cursor-agent CLI (<2026-05-20): payload in argv
 mybinary agenthooks notify --provider=codex          # legacy codex notify: kebab-case JSON in argv[1]
 mybinary agenthooks serve  --provider=opencode       # long-lived daemon for the OpenCode shim (§8)
@@ -542,9 +542,11 @@ Runtime responsibilities per mode:
   the flags before the `agenthooks` sentinel, e.g. `--config=...`), so
   distinct deployments get distinct servers (`internal/ipc`). No server?
   The client re-execs itself as one (detached, spawn-lock serialized)
-  and retries for ~2 s; any failure past that falls back to running the
-  identical pipeline in-process — decisions never depend on server
-  health. The server early-acks non-gating events right after decode
+  and retries for ~2 s; any failure past that fails open — a warning on
+  the debug log, exit 0 with no output, which providers read as "no
+  opinion". The server is a hard dependency of client mode: the client
+  never runs the pipeline itself, and `run` remains the supported direct
+  single-process mode. The server early-acks non-gating events right after decode
   (processing continues async), shuts down after an idle period or on
   SIGINT/SIGTERM (flushing telemetry), and drains-and-exits when a
   client built from a newer binary connects, so upgrades roll forward on
@@ -669,7 +671,7 @@ upstream reference. Seeded from provider research and production observation:
 | 7 | Cursor fail-open default; crashed hook allows action | `failClosed` in generated config on decision events |
 | 8 | Codex: empty stdout = allow; unknown JSON rejected; `ask`/`approve` fail the hook run | codec emits exact dialect; Ask degrades per policy |
 | 9 | Codex hooks require user trust of definition hash | install pre-seeds `[hooks.state]` trusted hashes |
-| 10 | Codex has no async hooks (`async` parsed-but-skipped) | client mode: the hook server early-acks non-gating events after decode (§6); the in-process fallback runs them synchronously (best-effort) |
+| 10 | Codex has no async hooks (`async` parsed-but-skipped) | client mode: the hook server early-acks non-gating events after decode (§6); direct `run` mode runs them synchronously (best-effort) |
 | 11 | Gemini: exit codes ≠ docs (any non-zero except 1 blocks); stderr parsed as decision when stdout empty | runner always writes explicit JSON to stdout; never bare non-zero exits |
 | 12 | Gemini `hookSpecificOutput.tool_input` is shallow-merge | `ErrLossyUpdate` when a rewrite deletes keys; docs marker |
 | 13 | Gemini `additionalContext` HTML-escapes `<`/`>` | documented loss; optional pre-encoding |

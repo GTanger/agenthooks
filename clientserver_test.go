@@ -120,7 +120,7 @@ func TestClientServerGatingRoundTrip(t *testing.T) {
 	exit := startServer(t, denyServerRunner(t), serverRunArgs(preArgs, "5s"))
 
 	// The client's own handler would allow: a deny response proves the
-	// decision came over the wire from the server, not from the fallback.
+	// decision came over the wire from the server, not from this process.
 	client := quietRunner()
 	noSpawn(client)
 	client.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
@@ -238,23 +238,31 @@ func TestClientSpawnRaceStartsOneServer(t *testing.T) {
 	waitExit(t, exit, "idle server")
 }
 
-func TestClientFallsBackInProcessWhenSpawnBlocked(t *testing.T) {
+func TestClientFailsOpenWhenServerUnavailable(t *testing.T) {
 	preArgs := testIdentity(t)
 	client := quietRunner(WithDedupDir(t.TempDir()), WithoutMCPResolution(), WithoutBackfill())
 	noSpawn(client)
+	// A gating deny handler that must never run: in client mode the server
+	// is a hard dependency, and an unreachable server means fail open —
+	// never a silent in-process run of the pipeline.
 	client.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
-		return Deny("fallback says no"), nil
+		t.Error("client mode must never run the pipeline in-process")
+		return Deny("must not run"), nil
 	})
 
 	start := time.Now()
-	out, code := runWith(t, client, clientRunArgs(preArgs, "--provider=claude-code"), fixture(t, "claude/pre_tool_use.json"))
-	if code != 0 || !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "fallback says no") {
-		t.Fatalf("fallback must run the pipeline in-process: %q (exit %d)", out, code)
+	var out, errb bytes.Buffer
+	code := client.Run(context.Background(), clientRunArgs(preArgs, "--provider=claude-code"),
+		bytes.NewReader(fixture(t, "claude/pre_tool_use.json")), &out, &errb)
+	if code != 0 || out.Len() != 0 || errb.Len() != 0 {
+		t.Fatalf("unreachable server must fail open (exit 0, no output): stdout %q, stderr %q (exit %d)",
+			out.String(), errb.String(), code)
 	}
-	// A failed spawn must not burn the reconnect budget: the seam errors
-	// immediately, so only the initial dial cost precedes the fallback.
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("fallback took %s", elapsed)
+	// The fail-open must be prompt: a failed spawn errors the seam
+	// immediately, so at most the connect/spawn retry budget (plus slack)
+	// precedes the exit.
+	if elapsed := time.Since(start); elapsed > clientSpawnBudget+3*time.Second {
+		t.Errorf("fail-open took %s, want under the spawn budget plus slack", elapsed)
 	}
 }
 

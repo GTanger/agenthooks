@@ -66,8 +66,8 @@ func TestClientAutoSpawnsDetachedServer(t *testing.T) {
 	}
 
 	// One server pid for both invocations — the second client reused the
-	// server the first one spawned; two distinct pids would mean two
-	// in-process fallbacks.
+	// server the first one spawned; two distinct pids would mean each
+	// client spawned its own server.
 	pids := readPids(t, logPath)
 	if len(pids) != 2 || pids[0] != pids[1] {
 		t.Errorf("handler pids = %v, want the same server pid twice", pids)
