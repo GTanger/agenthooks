@@ -410,11 +410,14 @@ func walkStopStage(ctx context.Context, e *StopEvent) (StopDecision, error) {
 	return Finish(), nil
 }
 
+func walkMCPInventoryStage(context.Context, *MCPInventoryEvent) error { return nil }
+
 func TestWalkOrderNamesAndPositions(t *testing.T) {
 	r := quietRunner()
 	r.OnAny(func(ctx context.Context, e *Event) error { return nil })
 	r.OnOther("Setup", func(ctx context.Context, e *Event) error { return nil })
 	r.Use(func(ctx context.Context, typed any, next Next) (Decision, error) { return next(ctx, typed) })
+	r.OnMCPInventory(walkMCPInventoryStage)
 	r.OnToolPre(walkToolPreStage, walkToolPreStage)
 	r.OnStop(walkStopStage)
 
@@ -425,8 +428,8 @@ func TestWalkOrderNamesAndPositions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if len(infos) != 6 {
-		t.Fatalf("visited %d stages, want 6: %+v", len(infos), infos)
+	if len(infos) != 7 {
+		t.Fatalf("visited %d stages, want 7: %+v", len(infos), infos)
 	}
 
 	check := func(i int, kind EventKind, typ StageType, pos int) {
@@ -438,29 +441,33 @@ func TestWalkOrderNamesAndPositions(t *testing.T) {
 	check(0, "", StageObserver, 0)        // OnAny
 	check(1, KindOther, StageObserver, 0) // OnOther
 	check(2, "", StageMiddleware, 0)      // Use
-	check(3, KindToolPre, StageHandler, 0)
-	check(4, KindToolPre, StageHandler, 1)
-	check(5, KindStop, StageHandler, 0)
+	check(3, KindMCPInventory, StageHandler, 0)
+	check(4, KindToolPre, StageHandler, 0)
+	check(5, KindToolPre, StageHandler, 1)
+	check(6, KindStop, StageHandler, 0)
 
 	// OnOther stages all report KindOther, so Native carries the native event
 	// name they were registered for; every other stage leaves it empty.
 	if infos[1].Native != "Setup" {
 		t.Errorf("OnOther stage Native = %q, want %q", infos[1].Native, "Setup")
 	}
-	if infos[0].Native != "" || infos[3].Native != "" {
-		t.Errorf("non-OnOther stages must have empty Native: %q, %q", infos[0].Native, infos[3].Native)
+	if infos[0].Native != "" || infos[4].Native != "" {
+		t.Errorf("non-OnOther stages must have empty Native: %q, %q", infos[0].Native, infos[4].Native)
 	}
 
 	// Names are the reflected function names: named funcs report as
 	// themselves, anonymous funcs as their closure names.
-	if !strings.Contains(infos[3].Name, "walkToolPreStage") {
+	if !strings.Contains(infos[3].Name, "walkMCPInventoryStage") {
 		t.Errorf("reflected name for a named func: %q", infos[3].Name)
 	}
 	if !strings.Contains(infos[4].Name, "walkToolPreStage") {
 		t.Errorf("reflected name for a named func: %q", infos[4].Name)
 	}
-	if !strings.Contains(infos[5].Name, "walkStopStage") {
+	if !strings.Contains(infos[5].Name, "walkToolPreStage") {
 		t.Errorf("reflected name for a named func: %q", infos[5].Name)
+	}
+	if !strings.Contains(infos[6].Name, "walkStopStage") {
+		t.Errorf("reflected name for a named func: %q", infos[6].Name)
 	}
 }
 

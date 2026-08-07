@@ -57,6 +57,7 @@ type Runner struct {
 
 	hSessionStart  []func(context.Context, *SessionStartEvent) (SessionStartDecision, error)
 	hSessionEnd    []func(context.Context, *SessionEndEvent) error
+	hMCPInventory  []func(context.Context, *MCPInventoryEvent) error
 	hPrompt        []func(context.Context, *PromptEvent) (PromptDecision, error)
 	hToolPre       []func(context.Context, *ToolPreEvent) (ToolPreDecision, error)
 	hToolPost      []func(context.Context, *ToolPostEvent) (ToolPostDecision, error)
@@ -160,6 +161,9 @@ func (r *Runner) OnSessionStart(hs ...func(context.Context, *SessionStartEvent) 
 }
 func (r *Runner) OnSessionEnd(hs ...func(context.Context, *SessionEndEvent) error) {
 	r.hSessionEnd = append(r.hSessionEnd, hs...)
+}
+func (r *Runner) OnMCPInventory(hs ...func(context.Context, *MCPInventoryEvent) error) {
+	r.hMCPInventory = append(r.hMCPInventory, hs...)
 }
 func (r *Runner) OnPromptSubmitted(hs ...func(context.Context, *PromptEvent) (PromptDecision, error)) {
 	r.hPrompt = append(r.hPrompt, hs...)
@@ -349,32 +353,6 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			r.codexMCPWarmStart(launch)
 		}
 	}
-
-	// Attach MCP transport before the matcher filter runs: resolution can
-	// repair the Server/Tool split, which MCP globs match against.
-	r.resolveMCP(typed)
-
-	// In-process matcher filter for providers whose config dialect can't
-	// express the manifest matcher (§7).
-	if inv.filter != nil {
-		if tool := toolOf(typed); tool != nil && !inv.filter.Matches(*tool) {
-			wire := noOpResponse(provider)
-			_, _ = stdout.Write(wire.Stdout)
-			return wire.ExitCode
-		}
-	}
-
-	// Cursor fires preToolUse AND beforeShellExecution/beforeMCPExecution
-	// for the same call (quirk #2): suppress the second sibling.
-	if provider == ProviderCursor && !r.dedupOff && (base.Kind == KindToolPre || base.Kind == KindToolPost) {
-		if r.seenDuplicate(typed) {
-			r.logger.Debug("agenthooks: suppressed duplicate cursor event", "native", base.NativeName)
-			wire := noOpResponse(provider)
-			_, _ = stdout.Write(wire.Stdout)
-			return wire.ExitCode
-		}
-	}
-
 	deadline := pol.Timeout
 	if deadline == 0 {
 		if inv.timeout > 0 {
@@ -386,10 +364,46 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
 	defer cancel()
 
+	// Attach MCP transport before the matcher filter runs: resolution can
+	// repair the Server/Tool split, which MCP globs match against.
+	r.resolveMCPContext(hctx, typed)
+
+	// In-process matcher filter for providers whose config dialect can't
+	// express the manifest matcher (§7).
+	if hctx.Err() == nil && inv.filter != nil {
+		if tool := toolOf(typed); tool != nil && !inv.filter.Matches(*tool) {
+			wire := noOpResponse(provider)
+			_, _ = stdout.Write(wire.Stdout)
+			return wire.ExitCode
+		}
+	}
+
+	// Cursor fires preToolUse AND beforeShellExecution/beforeMCPExecution
+	// for the same call (quirk #2): suppress the second sibling.
+	if hctx.Err() == nil && provider == ProviderCursor && !r.dedupOff && (base.Kind == KindToolPre || base.Kind == KindToolPost) {
+		if r.seenDuplicate(typed) {
+			r.logger.Debug("agenthooks: suppressed duplicate cursor event", "native", base.NativeName)
+			wire := noOpResponse(provider)
+			_, _ = stdout.Write(wire.Stdout)
+			return wire.ExitCode
+		}
+	}
+
+	// SessionStart uses only a ready cache plus cheap explicit/config reads.
+	// The first MCP gate waits for provider discovery and inventory delivery.
+	// All work shares the hook deadline so timeout policy applies before exit.
+	tool := toolOf(typed)
+	if hctx.Err() == nil && shouldReportMCPInventory(base, tool) {
+		err := r.reportMCPInventory(hctx, base, base.Kind != KindSessionStart)
+		if err != nil {
+			r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
+		}
+	}
+
 	// Best-effort backfill (quirks #30, #31): deliver a reporting-only
 	// prompt.submitted before the first event that implies one, for sessions
 	// where the provider never fired it.
-	if !r.backfillOff {
+	if hctx.Err() == nil && !r.backfillOff {
 		if pe, ok := typed.(*PromptEvent); ok {
 			r.notePromptSeen(base, pe.Prompt)
 		} else if promptImplied(base.Kind) {
@@ -397,10 +411,17 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 		}
 	}
 
-	core, herr := r.dispatch(hctx, typed)
-	if herr != nil {
-		r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", herr)
+	var core decisionCore
+	if err := hctx.Err(); err != nil {
+		r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", err)
 		core = failCore(pol, base)
+	} else {
+		var herr error
+		core, herr = r.dispatch(hctx, typed)
+		if herr != nil {
+			r.logger.Error("agenthooks: handler failed", "kind", base.Kind, "error", herr)
+			core = failCore(pol, base)
+		}
 	}
 	core = r.applyPolicy(typed, base, core, pol)
 
@@ -514,6 +535,8 @@ func (r *Runner) invoke(ctx context.Context, typed any) (Decision, error) {
 		return liftDecision(runStages(ctx, ev, r.hSessionStart))
 	case *SessionEndEvent:
 		return observeStages(ctx, ev, r.hSessionEnd)
+	case *MCPInventoryEvent:
+		return observeStages(ctx, ev, r.hMCPInventory)
 	case *SubagentStartEvent:
 		return observeStages(ctx, ev, r.hSubagentStart)
 	case *CompactEvent:

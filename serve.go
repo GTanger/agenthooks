@@ -80,15 +80,28 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			base.Session.CWD = serverInfo.Directory
 			base.Session.WorkspaceRoots = rootsFor(serverInfo.Directory)
 		}
-		if serverInfo.MCPExact {
-			r.resolveMCPWithOpenCodeInventory(typed, &serverInfo.MCP)
-		} else {
-			r.resolveMCP(typed)
+		tool := toolOf(typed)
+		reportInventory := shouldReportMCPInventory(base, tool)
+		inventory, inventoryComplete := serverInfo.MCP, serverInfo.MCPExact
+		if !inventoryComplete && (tool != nil || reportInventory) {
+			inventory = loadMCPConfigEntries(ProviderOpenCode, base.Session.CWD)
+		}
+		if tool != nil {
+			r.resolveMCPWithOpenCodeInventory(ctx, typed, &inventory)
+			reportInventory = shouldReportMCPInventory(base, tool)
 		}
 		pol := r.policy(base)
 		deadline := pol.Timeout
 		if deadline == 0 {
 			deadline = defaultDeadline
+		}
+		if reportInventory {
+			inventoryCtx, inventoryCancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+			err := r.reportMCPInventorySnapshot(inventoryCtx, base, inventory, inventoryComplete)
+			inventoryCancel()
+			if err != nil {
+				r.logger.Error("agenthooks: MCP inventory handler failed", "error", err)
+			}
 		}
 		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
 		core, herr := r.dispatch(hctx, typed)

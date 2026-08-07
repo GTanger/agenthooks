@@ -369,6 +369,9 @@ func (r *Runner) Walk(fn func(StageInfo) error) error {
 	if err := walkStages(fn, KindSessionEnd, r.hSessionEnd); err != nil {
 		return err
 	}
+	if err := walkStages(fn, KindMCPInventory, r.hMCPInventory); err != nil {
+		return err
+	}
 	if err := walkStages(fn, KindPromptSubmitted, r.hPrompt); err != nil {
 		return err
 	}

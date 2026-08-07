@@ -89,6 +89,11 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 		Title     string `json:"title"`
 		Message   string `json:"message"`
 		ParentID  string `json:"parentID"`
+		Info      struct {
+			ID        string `json:"id"`
+			ParentID  string `json:"parentID"`
+			Directory string `json:"directory"`
+		} `json:"info"`
 		// FinalMessage is spliced into the session.idle input by the shim,
 		// which reads the transcript over the OpenCode SDK: no native hook or
 		// bus event carries the completed assistant text.
@@ -109,6 +114,15 @@ func decodeOpenCodeFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 		} `json:"usage"`
 	}
 	_ = json.Unmarshal(fr.Input, &in) // input shape varies per hook; best-effort probe
+	if in.SessionID == "" {
+		in.SessionID = in.Info.ID
+	}
+	if in.ParentID == "" {
+		in.ParentID = in.Info.ParentID
+	}
+	if in.Directory == "" {
+		in.Directory = in.Info.Directory
+	}
 	if in.SessionID == "" {
 		if sid := rawField(fr.Output, "message.sessionID"); len(sid) > 0 {
 			_ = json.Unmarshal(sid, &in.SessionID)

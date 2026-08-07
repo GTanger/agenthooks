@@ -45,14 +45,18 @@ func (r *Runner) warmClaudeMCP(cwd string) {
 }
 
 func (r *Runner) claudeMCPListEntries(launch claudeLaunchContext) []mcpConfigEntry {
-	entries, _ := r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
-		return runClaudeMCPList(ctx, launch)
-	})
+	entries, _ := r.claudeMCPListSnapshot(context.Background(), launch)
 	return entries
 }
 
-func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([]mcpConfigEntry, bool)) ([]mcpConfigEntry, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), mcpListWaitTimeout)
+func (r *Runner) claudeMCPListSnapshot(ctx context.Context, launch claudeLaunchContext) ([]mcpConfigEntry, bool) {
+	return r.cachedMCPListEntries(ctx, launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+		return runClaudeMCPList(ctx, launch)
+	})
+}
+
+func (r *Runner) cachedMCPListEntries(parent context.Context, key string, probe func(context.Context) ([]mcpConfigEntry, bool)) ([]mcpConfigEntry, bool) {
+	ctx, cancel := context.WithTimeout(parent, mcpListWaitTimeout)
 	defer cancel()
 	dir := r.mcpListCacheDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -64,12 +68,14 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 	if mcpListCacheFresh(cached, now) {
 		return cached.Entries, cached.HasSnapshot
 	}
+	if ctx.Err() != nil {
+		return cached.Entries, cached.HasSnapshot
+	}
 	cleanupMCPListCache(dir, time.Now())
 
 	// Only one process runs the expensive health check for a context. Waiters
 	// consume its replacement snapshot instead of starting a probe stampede.
 	var unlock func()
-	deadline := time.Now().Add(mcpListWaitTimeout)
 	backoff := 25 * time.Millisecond
 	for {
 		release, ok, lockErr := tryMCPListLock(path + ".lock")
@@ -89,13 +95,14 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 		if latest := readMCPListCache(path); mcpListCacheFresh(latest, r.mcpListNow()) {
 			return latest.Entries, latest.HasSnapshot
 		}
-		if !time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
 			if latest := readMCPListCache(path); latest.CheckedAt > cached.CheckedAt {
 				return latest.Entries, latest.HasSnapshot
 			}
 			return cached.Entries, cached.HasSnapshot
+		case <-time.After(backoff):
 		}
-		time.Sleep(backoff)
 		backoff = min(2*backoff, 250*time.Millisecond)
 	}
 	defer unlock()
@@ -107,12 +114,26 @@ func (r *Runner) cachedMCPListEntries(key string, probe func(context.Context) ([
 	if mcpListCacheFresh(cached, now) {
 		return cached.Entries, cached.HasSnapshot
 	}
+	if ctx.Err() != nil {
+		return cached.Entries, cached.HasSnapshot
+	}
 	if entries, success := probe(ctx); success {
 		cached.Entries = entries // successful probes replace, so removals stick
 		cached.HasSnapshot = true
 	}
+	if ctx.Err() != nil {
+		return cached.Entries, cached.HasSnapshot
+	}
 	cached.CheckedAt = now.Unix()
 	writeMCPListCache(path, cached)
+	return cached.Entries, cached.HasSnapshot
+}
+
+func (r *Runner) cachedMCPListSnapshot(key string) ([]mcpConfigEntry, bool) {
+	cached := readMCPListCache(filepath.Join(r.mcpListCacheDir(), key+".json"))
+	if !mcpListCacheFresh(cached, r.mcpListNow()) {
+		return nil, false
+	}
 	return cached.Entries, cached.HasSnapshot
 }
 
@@ -150,12 +171,12 @@ func (r *Runner) codexMCPWarmContext(cwd string) (codexLaunchContext, bool) {
 
 func (r *Runner) warmCodexMCP(launch codexLaunchContext) {
 	if !r.mcpResolveOff && !r.mcpListOff && !launch.Unreplayable {
-		_, _ = r.codexMCPListEntries(launch)
+		_, _ = r.codexMCPListEntries(context.Background(), launch)
 	}
 }
 
-func (r *Runner) codexMCPListEntries(launch codexLaunchContext) ([]mcpConfigEntry, bool) {
-	return r.cachedMCPListEntries(launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
+func (r *Runner) codexMCPListEntries(ctx context.Context, launch codexLaunchContext) ([]mcpConfigEntry, bool) {
+	return r.cachedMCPListEntries(ctx, launch.cacheKey(), func(ctx context.Context) ([]mcpConfigEntry, bool) {
 		return runCodexMCPList(ctx, launch)
 	})
 }

@@ -1,6 +1,7 @@
 package agenthooks
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -46,10 +47,14 @@ type mcpConfigEntry struct {
 // detection itself: <server>_<tool> names carry no reserved marker, so only
 // a config match can tell an MCP call apart from a native tool (quirk #28).
 func (r *Runner) resolveMCP(typed any) {
-	r.resolveMCPWithOpenCodeInventory(typed, nil)
+	r.resolveMCPWithOpenCodeInventory(context.Background(), typed, nil)
 }
 
-func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConfigEntry) {
+func (r *Runner) resolveMCPContext(ctx context.Context, typed any) {
+	r.resolveMCPWithOpenCodeInventory(ctx, typed, nil)
+}
+
+func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any, inventory *[]mcpConfigEntry) {
 	if r.mcpResolveOff {
 		return
 	}
@@ -66,6 +71,18 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 		r.resolveOpenCodeMCP(tc, *inventory)
 		return
 	}
+	r.resolveMCPProvider(ctx, typed)
+}
+
+func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
+	if r.mcpResolveOff {
+		return
+	}
+	tc := toolOf(typed)
+	if tc == nil {
+		return
+	}
+	base := eventOf(typed)
 	if tc.MCP == nil || tc.MCP.URL != "" || tc.MCP.Command != "" {
 		return
 	}
@@ -82,14 +99,14 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 	)
 	switch base.Provider {
 	case ProviderClaudeCode:
-		matched, server, tool = r.resolveClaudeMCP(base, tc)
+		matched, server, tool = r.resolveClaudeMCP(ctx, base, tc)
 	case ProviderKimi:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp__<server>__<tool> with the configured name verbatim — hyphens
 		// survive unsanitized (verified against kimi-code 0.22.2).
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", verbatimMCPName)
 	case ProviderCodex:
-		matched, server, tool = r.resolveCodexMCP(base, tc)
+		matched, server, tool = r.resolveCodexMCP(ctx, base, tc)
 	case ProviderGemini:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		// mcp_<server>_<tool> with a single-underscore separator: the split
@@ -125,13 +142,13 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(typed any, inventory *[]mcpConf
 	}
 }
 
-func (r *Runner) resolveCodexMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+func (r *Runner) resolveCodexMCP(ctx context.Context, base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
 	launch, recovered := r.currentCodexLaunchContext(base.Session.CWD)
 	if recovered && launch.Unreplayable {
 		return nil, "", ""
 	}
 	if recovered && !r.mcpListOff {
-		entries, authoritative := r.codexMCPListEntries(launch)
+		entries, authoritative := r.codexMCPListEntries(ctx, launch)
 		if matched, server, tool := matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName); matched != nil || authoritative {
 			return matched, server, tool
 		}
@@ -145,23 +162,24 @@ func (r *Runner) resolveCodexMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, st
 	return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", codexSanitizeMCPName)
 }
 
-func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
-	ctx := currentClaudeLaunchContext(base.Session.CWD)
-	if ctx.SafeMode {
+func (r *Runner) resolveClaudeMCP(parent context.Context, base *Event, tc *ToolCall) (*mcpConfigEntry, string, string) {
+	launch := currentClaudeLaunchContext(base.Session.CWD)
+	if launch.SafeMode {
 		return nil, "", ""
 	}
-	explicit := ctx.explicitMCPEntries()
+	explicit := launch.explicitMCPEntries()
 	if matched, server, tool := matchSanitizedPrefix(explicit, tc.Name, "mcp__", "__", claudeSanitizeMCPName); matched != nil {
 		return matched, server, tool
 	}
-	if ctx.StrictMCP {
+	if launch.StrictMCP {
 		return nil, "", ""
 	}
-	if ctx.Bare {
-		if r.mcpListOff || len(ctx.PluginDirs) == 0 {
+	if launch.Bare {
+		if r.mcpListOff || len(launch.PluginDirs) == 0 {
 			return nil, "", ""
 		}
-		entries := ctx.barePluginEntries(r.claudeMCPListEntries(ctx))
+		entries, _ := r.claudeMCPListSnapshot(parent, launch)
+		entries = launch.barePluginEntries(entries)
 		return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 	}
 
@@ -169,12 +187,13 @@ func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, s
 	// so their reconstructed CLI inventory is authoritative. An explicit
 	// --mcp-config was already checked above because `mcp list` cannot accept
 	// that variadic top-level flag.
-	if len(ctx.ReplayArgs) > 0 {
+	if len(launch.ReplayArgs) > 0 {
 		if r.mcpListOff {
 			entries := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
 			return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 		}
-		return matchSanitizedPrefix(r.claudeMCPListEntries(ctx), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+		entries, _ := r.claudeMCPListSnapshot(parent, launch)
+		return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 	}
 
 	configured := loadMCPConfigEntries(ProviderClaudeCode, base.Session.CWD)
@@ -184,7 +203,8 @@ func (r *Runner) resolveClaudeMCP(base *Event, tc *ToolCall) (*mcpConfigEntry, s
 	if r.mcpListOff {
 		return nil, "", ""
 	}
-	return matchSanitizedPrefix(r.claudeMCPListEntries(ctx), tc.Name, "mcp__", "__", claudeSanitizeMCPName)
+	entries, _ := r.claudeMCPListSnapshot(parent, launch)
+	return matchSanitizedPrefix(entries, tc.Name, "mcp__", "__", claudeSanitizeMCPName)
 }
 
 // resolveOpenCodeMCP detects and resolves OpenCode MCP calls. OpenCode

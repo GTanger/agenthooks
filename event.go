@@ -42,6 +42,7 @@ type EventKind string
 const (
 	KindSessionStart    EventKind = "session.start"
 	KindSessionEnd      EventKind = "session.end"
+	KindMCPInventory    EventKind = "mcp.inventory"
 	KindPromptSubmitted EventKind = "prompt.submitted"
 	KindToolPre         EventKind = "tool.pre" // gate/rewrite before execution
 	KindToolPost        EventKind = "tool.post"
@@ -338,6 +339,23 @@ type SessionEndEvent struct {
 	Reason string
 }
 
+// MCPServer is one server in the provider's effective MCP configuration.
+type MCPServer struct {
+	Name    string
+	URL     string
+	Command string
+}
+
+// MCPInventoryEvent reports the known MCP server snapshot independently from
+// any provider-native session event. Complete is false when provider discovery
+// failed or is still in progress and Servers contains only known
+// explicit/config-file entries.
+type MCPInventoryEvent struct {
+	Event
+	Servers  []MCPServer
+	Complete bool
+}
+
 type PromptEvent struct {
 	Event
 	Prompt string
@@ -431,6 +449,8 @@ func eventOf(typed any) *Event {
 	case *SessionStartEvent:
 		return &ev.Event
 	case *SessionEndEvent:
+		return &ev.Event
+	case *MCPInventoryEvent:
 		return &ev.Event
 	case *PromptEvent:
 		return &ev.Event

@@ -4,12 +4,281 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMCPInventoryCompletesBeforeFirstTool(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"mcpServers":{"remote":{"url":"https://mcp.example.com"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reported := false
+	r := New(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
+	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
+		if len(event.Servers) != 1 || event.Servers[0].Name != "remote" {
+			return fmt.Errorf("unexpected inventory: %#v", event.Servers)
+		}
+		if !event.Complete {
+			return errors.New("config-only inventory must be complete when CLI fallback is disabled")
+		}
+		reported = true
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		if !reported {
+			return NoDecision(), errors.New("inventory handler must complete before the tool handler starts")
+		}
+		return NoDecision(), nil
+	})
+
+	payload := strings.NewReader(fmt.Sprintf(`{"session_id":"session-1","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`, cwd))
+	var stdout, stderr bytes.Buffer
+	if code := r.Run(t.Context(), []string{"run", "--provider=claude-code", "--variant=cli"}, payload, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d: %s", code, stderr.String())
+	}
+	if !reported {
+		t.Fatal("inventory was not reported")
+	}
+}
+
+func TestMCPInventoryRetriesAfterHandlerFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r := New(WithDedupDir(t.TempDir()), WithoutMCPListFallback())
+	attempts := 0
+	r.OnMCPInventory(func(_ context.Context, _ *MCPInventoryEvent) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		return NoDecision(), nil
+	})
+
+	payload := []byte(`{"session_id":"session-retry","hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`)
+	runWith(t, r, claudeArgs(), payload)
+	runWith(t, r, claudeArgs(), payload)
+	if attempts != 2 {
+		t.Fatalf("inventory attempts = %d, want 2", attempts)
+	}
+}
+
+func TestMCPInventorySessionStartDoesNotWaitForProbe(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	stateDir := t.TempDir()
+	r := New(WithDedupDir(stateDir))
+	inventories := make(chan *MCPInventoryEvent, 2)
+	toolStarted := make(chan struct{}, 1)
+	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
+		inventories <- event
+		return nil
+	})
+	r.OnToolPre(func(_ context.Context, _ *ToolPreEvent) (ToolPreDecision, error) {
+		toolStarted <- struct{}{}
+		return NoDecision(), nil
+	})
+
+	launch := currentClaudeLaunchContext(cwd)
+	cacheDir := filepath.Join(stateDir, "agenthooks-mcplist")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, launch.cacheKey()+".json")
+	release, locked, err := tryMCPListLock(cachePath + ".lock")
+	if err != nil || !locked {
+		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
+	sessionPayload := []byte(fmt.Sprintf(
+		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"SessionStart","source":"startup"}`,
+		cwd,
+	))
+	sessionDone := make(chan struct{})
+	go func() {
+		runWith(t, r, claudeArgs(), sessionPayload)
+		close(sessionDone)
+	}()
+	select {
+	case <-sessionDone:
+	case <-time.After(500 * time.Millisecond):
+		release()
+		released = true
+		<-sessionDone
+		t.Fatal("SessionStart waited for the in-flight MCP probe")
+	}
+	var first *MCPInventoryEvent
+	select {
+	case first = <-inventories:
+	case <-time.After(time.Second):
+		t.Fatal("SessionStart did not emit an MCP inventory")
+	}
+	if first.Complete || len(first.Servers) != 1 || first.Servers[0].Name != "configured" {
+		t.Fatalf("SessionStart inventory = %+v", first)
+	}
+
+	toolPayload := []byte(fmt.Sprintf(
+		`{"session_id":"session-warm","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__plugin__run","tool_input":{}}`,
+		cwd,
+	))
+	toolDone := make(chan struct{})
+	go func() {
+		runWith(t, r, claudeArgs(), toolPayload)
+		close(toolDone)
+	}()
+	select {
+	case <-toolDone:
+		t.Fatal("first MCP hook did not wait for the in-flight probe")
+	case <-time.After(100 * time.Millisecond):
+	}
+	writeMCPListCache(cachePath, mcpListCache{
+		CheckedAt:   time.Now().Unix(),
+		Entries:     []mcpConfigEntry{{Name: "plugin", URL: "https://plugin.example.com/mcp"}},
+		HasSnapshot: true,
+	})
+	release()
+	released = true
+	select {
+	case <-toolDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first MCP hook did not resume after the inventory completed")
+	}
+	var second *MCPInventoryEvent
+	select {
+	case second = <-inventories:
+	case <-time.After(time.Second):
+		t.Fatal("first MCP hook did not emit the completed inventory")
+	}
+	if !second.Complete || len(second.Servers) != 2 {
+		t.Fatalf("first MCP hook inventory = %+v", second)
+	}
+	select {
+	case <-toolStarted:
+	default:
+		t.Fatal("tool handler did not run after the complete inventory handler")
+	}
+}
+
+func TestMCPInventoryPreservesClaudeConfigAfterProbeFailure(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"configured":{"url":"https://configured.example.com/mcp"}}}`)
+	fake := installFakeClaude(t, "")
+	writeConfig(t, fake.exitFile, "1")
+	r := mcpTestRunner(t)
+	entries, complete := r.effectiveMCPInventory(t.Context(), &Event{
+		Provider: ProviderClaudeCode,
+		Session:  SessionInfo{CWD: cwd},
+	}, true)
+	if complete || len(entries) != 1 || entries[0].Name != "configured" {
+		t.Fatalf("Claude failed-probe inventory = %+v complete=%v", entries, complete)
+	}
+}
+
+func TestMCPInventoryPreservesCodexConfigAfterProbeFailure(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".codex", "config.toml"), `[mcp_servers.configured]
+url = "https://configured.example.com/mcp"
+`)
+	installFakeCodex(t, "not-json")
+	launch := parseCodexLaunchArgs([]string{"codex"}, cwd)
+	r := mcpTestRunner(t)
+	r.codexLaunchContext = &launch
+	entries, complete := r.effectiveMCPInventory(t.Context(), &Event{
+		Provider: ProviderCodex,
+		Session:  SessionInfo{CWD: cwd},
+	}, true)
+	if complete || len(entries) != 1 || entries[0].Name != "configured" {
+		t.Fatalf("Codex failed-probe inventory = %+v complete=%v", entries, complete)
+	}
+}
+
+func TestMCPInventoryDiscoveryStopsWhenCanceled(t *testing.T) {
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	dir := r.mcpListCacheDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "canceled.json")
+	release, locked, err := tryMCPListLock(path + ".lock")
+	if err != nil || !locked {
+		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	entries, complete := r.cachedMCPListEntries(ctx, "canceled", func(context.Context) ([]mcpConfigEntry, bool) {
+		t.Fatal("canceled waiter must not probe while another process holds the lock")
+		return nil, false
+	})
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled discovery took %v", elapsed)
+	}
+	if len(entries) != 0 || complete {
+		t.Fatalf("canceled discovery = %+v complete=%v", entries, complete)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("canceled discovery wrote a cache snapshot: %v", err)
+	}
+}
+
+func TestMCPInventoryDiscoveryTimeoutUsesPolicyFallback(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	stateDir := t.TempDir()
+	r := quietRunner(
+		WithDedupDir(stateDir),
+		WithPolicy(Policy{Fail: FailClosed, Timeout: 50 * time.Millisecond}),
+	)
+	r.OnMCPInventory(func(context.Context, *MCPInventoryEvent) error { return nil })
+	r.OnToolPre(func(context.Context, *ToolPreEvent) (ToolPreDecision, error) {
+		return Allow(), nil
+	})
+
+	launch := currentClaudeLaunchContext(cwd)
+	dir := filepath.Join(stateDir, "agenthooks-mcplist")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	release, locked, err := tryMCPListLock(filepath.Join(dir, launch.cacheKey()+".json.lock"))
+	if err != nil || !locked {
+		t.Fatalf("holding probe lock: locked=%v err=%v", locked, err)
+	}
+	defer release()
+
+	payload := []byte(fmt.Sprintf(
+		`{"session_id":"session-timeout","cwd":%q,"hook_event_name":"PreToolUse","tool_name":"mcp__remote__call","tool_input":{}}`,
+		cwd,
+	))
+	start := time.Now()
+	out, _ := runWith(t, r, claudeArgs(), payload)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("timed-out discovery took %v", elapsed)
+	}
+	if !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Fatalf("timeout must use fail-closed fallback: %q", out)
+	}
+}
 
 func quietRunner(opts ...Option) *Runner {
 	opts = append([]Option{WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))}, opts...)
