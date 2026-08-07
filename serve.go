@@ -87,7 +87,7 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 			inventory = loadMCPConfigEntries(ProviderOpenCode, base.Session.CWD)
 		}
 		if tool != nil {
-			r.resolveMCPWithOpenCodeInventory(typed, &inventory)
+			r.resolveMCPWithOpenCodeInventory(ctx, typed, &inventory)
 			reportInventory = shouldReportMCPInventory(base, tool)
 		}
 		pol := r.policy(base)

@@ -22,7 +22,7 @@ func (r *Runner) reportMCPInventory(ctx context.Context, base *Event, waitForPro
 		return nil
 	}
 
-	entries, complete := r.effectiveMCPInventory(base, waitForProbe)
+	entries, complete := r.effectiveMCPInventory(ctx, base, waitForProbe)
 	return r.reportMCPInventorySnapshot(ctx, base, entries, complete)
 }
 
@@ -107,7 +107,7 @@ func (r *Runner) reportMCPInventorySnapshot(ctx context.Context, base *Event, en
 	}
 }
 
-func (r *Runner) effectiveMCPInventory(base *Event, waitForProbe bool) ([]mcpConfigEntry, bool) {
+func (r *Runner) effectiveMCPInventory(ctx context.Context, base *Event, waitForProbe bool) ([]mcpConfigEntry, bool) {
 	switch base.Provider {
 	case ProviderClaudeCode:
 		launch := currentClaudeLaunchContext(base.Session.CWD)
@@ -124,7 +124,7 @@ func (r *Runner) effectiveMCPInventory(base *Event, waitForProbe bool) ([]mcpCon
 			}
 			entries, complete := r.cachedMCPListSnapshot(launch.cacheKey())
 			if waitForProbe {
-				entries, complete = r.claudeMCPListSnapshot(launch)
+				entries, complete = r.claudeMCPListSnapshot(ctx, launch)
 			}
 			return firstMCPEntries(explicit, launch.barePluginEntries(entries)), complete
 		}
@@ -133,7 +133,7 @@ func (r *Runner) effectiveMCPInventory(base *Event, waitForProbe bool) ([]mcpCon
 		}
 		entries, complete := r.cachedMCPListSnapshot(launch.cacheKey())
 		if waitForProbe {
-			entries, complete = r.claudeMCPListSnapshot(launch)
+			entries, complete = r.claudeMCPListSnapshot(ctx, launch)
 		}
 		if len(launch.ReplayArgs) > 0 {
 			if !complete {
@@ -147,7 +147,7 @@ func (r *Runner) effectiveMCPInventory(base *Event, waitForProbe bool) ([]mcpCon
 		if ok && !launch.Unreplayable && !r.mcpListOff {
 			entries, complete := r.cachedMCPListSnapshot(launch.cacheKey())
 			if waitForProbe {
-				entries, complete = r.codexMCPListEntries(launch)
+				entries, complete = r.codexMCPListEntries(ctx, launch)
 			}
 			if complete {
 				return entries, true

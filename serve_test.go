@@ -138,6 +138,34 @@ func TestServeOpenCodeReportsInventoryBeforeFirstMCPTool(t *testing.T) {
 	}
 }
 
+func TestServeOpenCodeReportsInventoryBeforeSessionCreated(t *testing.T) {
+	r := quietRunner(WithDedupDir(t.TempDir()))
+	var order []string
+	r.OnMCPInventory(func(_ context.Context, event *MCPInventoryEvent) error {
+		order = append(order, "inventory:"+event.Session.ID)
+		return nil
+	})
+	r.OnSessionStart(func(_ context.Context, event *SessionStartEvent) (SessionStartDecision, error) {
+		order = append(order, "session:"+event.Session.ID)
+		if event.Session.CWD != "/session-work" {
+			t.Fatalf("session CWD = %q", event.Session.CWD)
+		}
+		return ContinueSession(), nil
+	})
+	lines := []string{
+		`{"seq":1,"hook":"initialize","input":{"directory":"/work","mcp":{"active":{"type":"remote","url":"https://active.example.com/mcp"}}}}`,
+		`{"seq":2,"hook":"session.created","input":{"info":{"id":"session-created","directory":"/session-work"}},"output":null}`,
+	}
+	var out, errb bytes.Buffer
+	if code := r.Run(t.Context(), []string{"agenthooks", "serve", "--provider=opencode"},
+		strings.NewReader(strings.Join(lines, "\n")+"\n"), &out, &errb); code != 0 {
+		t.Fatalf("serve exit %d: %s", code, errb.String())
+	}
+	if got := strings.Join(order, ","); got != "inventory:session-created,session:session-created" {
+		t.Fatalf("dispatch order = %q", got)
+	}
+}
+
 func TestServeOpenCodeMCPInventoryFallbackAndEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
