@@ -46,29 +46,19 @@ type skillLocation struct {
 	owner         string
 }
 
-// SkillActivationOf projects a normalized Claude Skill tool event into its
+// SkillActivationOf projects a normalized skill-loading tool event into its
 // activated name and, after completion, the exact content shown to the model.
 // It returns nil for other tools and failed activations.
 func SkillActivationOf(typed any) *SkillActivation {
 	base := EventOf(typed)
 	tool := toolOf(typed)
-	if base == nil || tool == nil || base.Provider != ProviderClaudeCode || !strings.EqualFold(tool.Name, "Skill") {
+	if base == nil || tool == nil {
 		return nil
 	}
 	if event, ok := typed.(*ToolPostEvent); ok && event.Failed {
 		return nil
 	}
-	var input struct {
-		Skill string `json:"skill"`
-		Name  string `json:"name"`
-	}
-	if json.Unmarshal(tool.Input, &input) != nil {
-		return nil
-	}
-	name := strings.TrimSpace(input.Skill)
-	if name == "" {
-		name = strings.TrimSpace(input.Name)
-	}
+	name := skillNameFromTool(base.Provider, tool)
 	if name == "" {
 		return nil
 	}
@@ -77,6 +67,53 @@ func SkillActivationOf(typed any) *SkillActivation {
 		_ = json.Unmarshal(event.Output, &activation.Content)
 	}
 	return activation
+}
+
+func skillNameFromTool(provider Provider, tool *ToolCall) string {
+	if provider != ProviderClaudeCode || !strings.EqualFold(tool.Name, "Skill") {
+		if tool.Canonical != ToolFileRead {
+			return ""
+		}
+		var input struct {
+			FilePath string `json:"file_path"`
+			Path     string `json:"path"`
+		}
+		if json.Unmarshal(tool.Input, &input) != nil {
+			return ""
+		}
+		path := input.FilePath
+		if path == "" {
+			path = input.Path
+		}
+		parts := strings.Split(strings.ReplaceAll(path, `\`, "/"), "/")
+		if len(parts) < 3 || parts[len(parts)-1] != "SKILL.md" {
+			return ""
+		}
+		nameIndex := len(parts) - 2
+		skillsIndex := nameIndex - 1
+		if parts[skillsIndex] == ".system" {
+			skillsIndex--
+		}
+		if skillsIndex < 0 || parts[skillsIndex] != "skills" || !claudeSkillTokenRE.MatchString(parts[nameIndex]) {
+			return ""
+		}
+		return parts[nameIndex]
+	}
+	var input struct {
+		Skill string `json:"skill"`
+		Name  string `json:"name"`
+	}
+	if json.Unmarshal(tool.Input, &input) != nil {
+		return ""
+	}
+	name := strings.TrimSpace(input.Skill)
+	if name == "" {
+		name = strings.TrimSpace(input.Name)
+	}
+	if name == "" {
+		return ""
+	}
+	return name
 }
 
 func readClaudeSkillContent(name, cwd string) (string, bool) {

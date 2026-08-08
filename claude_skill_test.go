@@ -136,3 +136,20 @@ func TestResolveClaudeSkillRejectsOversizedManifest(t *testing.T) {
 		t.Fatalf("oversized skill was captured: %q", captured)
 	}
 }
+
+func TestSkillActivationOfFileRead(t *testing.T) {
+	event := &ToolPostEvent{
+		Event: Event{Provider: ProviderCursor, Kind: KindToolPost},
+		Tool: ToolCall{
+			Name:      "read_file",
+			Canonical: ToolFileRead,
+			Input:     json.RawMessage(`{"file_path":"C:\\repo\\.cursor\\skills\\review\\SKILL.md"}`),
+		},
+		Output: json.RawMessage(`"review content"`),
+	}
+
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Name != "review" || activation.Content != "review content" {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
