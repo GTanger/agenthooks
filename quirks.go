@@ -157,4 +157,8 @@ var quirkRegistry = []Quirk{
 		Behavior:   "launch -c/--config overrides, profiles, and plugin MCP servers can change the effective inventory without changing CODEX_HOME/config.toml; tool hooks carry only the tool name",
 		Mitigation: "the hook recovers Codex ancestor argv before detachment, passes the launch context to workers over stdin, and warms a context-keyed `codex mcp list --json` replacement snapshot from SessionStart",
 		Reference:  "verified against codex-cli 0.145.0"},
+	{ID: 33, Provider: ProviderClaudeCode, Versions: "observed 2.1.225", Event: KindToolPost,
+		Behavior:   "Skill PostToolUse reports only success and the skill name while Claude injects the manifest into model context separately",
+		Mitigation: "normalized Output is recovered from Claude's resolved local skill manifest; Raw retains the provider response",
+		Reference:  "verified against claude-code 2.1.225"},
 }

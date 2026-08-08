@@ -44,6 +44,50 @@ func TestDecodeClaudePreToolUse(t *testing.T) {
 	}
 }
 
+func TestDecodeClaudeSkillPostToolUseBackfillsModelOutput(t *testing.T) {
+	content := "---\nname: review\n---\n\nInspect the change.\n"
+	cwd := t.TempDir()
+	skillDir := filepath.Join(cwd, ".claude", "skills", "review")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"session_id":      "sess-claude-skill",
+		"transcript_path": filepath.Join(cwd, "transcript.jsonl"),
+		"cwd":             cwd,
+		"hook_event_name": "PostToolUse",
+		"tool_name":       "Skill",
+		"tool_input":      map[string]any{"skill": "review"},
+		"tool_response":   map[string]any{"success": true, "commandName": "review"},
+		"tool_use_id":     "toolu_skill",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := typed.(*ToolPostEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPostEvent", typed)
+	}
+	var output string
+	if err := json.Unmarshal(event.Output, &output); err != nil {
+		t.Fatalf("decode model-visible output: %v", err)
+	}
+	if output != content {
+		t.Fatalf("Output = %q, want %q", output, content)
+	}
+	if string(event.Raw) != string(payload) {
+		t.Error("Raw must remain byte-identical to the provider payload")
+	}
+}
+
 func TestDecodeClaudeMCP(t *testing.T) {
 	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, fixture(t, "claude/pre_tool_use_mcp.json"))
 	if err != nil {

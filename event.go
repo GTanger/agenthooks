@@ -374,7 +374,7 @@ type PermissionEvent struct {
 type ToolPostEvent struct {
 	Event
 	Tool   ToolCall
-	Output json.RawMessage // provider's tool_response/output, verbatim
+	Output json.RawMessage // model-visible tool output; Event.Raw retains the provider payload verbatim
 	Failed bool            // true on tool.error and error-carrying tool.post
 	Error  string
 	// DurationMS is the tool execution time in milliseconds when the provider
