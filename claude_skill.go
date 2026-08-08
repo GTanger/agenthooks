@@ -31,6 +31,9 @@ type SkillActivation struct {
 
 	// ContentAvailable reports whether Content came from a completed tool event.
 	ContentAvailable bool
+
+	// Explicit reports whether the provider emitted a native Skill tool call.
+	Explicit bool
 }
 
 type skillAuthorization uint8
@@ -73,9 +76,15 @@ func SkillActivationOf(typed any) *SkillActivation {
 	if name == "" {
 		return nil
 	}
-	activation := &SkillActivation{Name: name, Content: "", ContentAvailable: false}
+	activation := &SkillActivation{
+		Name:             name,
+		Content:          "",
+		ContentAvailable: false,
+		Explicit:         base.Provider == ProviderClaudeCode && strings.EqualFold(tool.Name, "Skill"),
+	}
 	if event, ok := typed.(*ToolPostEvent); ok {
-		activation.ContentAvailable = json.Unmarshal(event.Output, &activation.Content) == nil
+		trimmed := strings.TrimSpace(string(event.Output))
+		activation.ContentAvailable = strings.HasPrefix(trimmed, `"`) && json.Unmarshal(event.Output, &activation.Content) == nil
 	}
 	return activation
 }
