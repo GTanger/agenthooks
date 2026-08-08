@@ -153,3 +153,34 @@ func TestSkillActivationOfFileRead(t *testing.T) {
 		t.Fatalf("SkillActivationOf() = %+v", activation)
 	}
 }
+
+func TestSkillActivationOfShellRead(t *testing.T) {
+	event := &ToolPreEvent{
+		Event: Event{Provider: ProviderCodex, Kind: KindToolPre},
+		Tool: ToolCall{
+			Name:      "Bash",
+			Canonical: ToolShell,
+			Input:     json.RawMessage(`{"command":"sed -n 1,200p '/repo/.agents/skills/review/SKILL.md'"}`),
+		},
+	}
+
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Name != "review" || activation.ContentAvailable {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
+
+func TestSkillActivationOfIgnoresPermissionPreview(t *testing.T) {
+	event := &PermissionEvent{
+		Event: Event{Provider: ProviderCodex, Kind: KindPermission},
+		Tool: ToolCall{
+			Name:      "Bash",
+			Canonical: ToolShell,
+			Input:     json.RawMessage(`{"command":"cat /repo/.agents/skills/review/SKILL.md"}`),
+		},
+	}
+
+	if activation := SkillActivationOf(event); activation != nil {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
