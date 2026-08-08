@@ -77,33 +77,36 @@ func SkillActivationOf(typed any) *SkillActivation {
 
 func skillNameFromTool(provider Provider, tool *ToolCall) string {
 	if provider != ProviderClaudeCode || !strings.EqualFold(tool.Name, "Skill") {
-		if tool.Canonical != ToolFileRead {
+		switch tool.Canonical {
+		case ToolFileRead:
+			var input struct {
+				FilePath string `json:"file_path"`
+				Path     string `json:"path"`
+			}
+			if json.Unmarshal(tool.Input, &input) != nil {
+				return ""
+			}
+			if input.FilePath != "" {
+				return skillNameFromManifestPath(input.FilePath)
+			}
+			return skillNameFromManifestPath(input.Path)
+		case ToolShell:
+			var input struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(tool.Input, &input) != nil {
+				return ""
+			}
+			var name string
+			for _, token := range shellTokens(input.Command) {
+				if candidate := skillNameFromManifestPath(token); candidate != "" {
+					name = candidate
+				}
+			}
+			return name
+		default:
 			return ""
 		}
-		var input struct {
-			FilePath string `json:"file_path"`
-			Path     string `json:"path"`
-		}
-		if json.Unmarshal(tool.Input, &input) != nil {
-			return ""
-		}
-		path := input.FilePath
-		if path == "" {
-			path = input.Path
-		}
-		parts := strings.Split(strings.ReplaceAll(path, `\`, "/"), "/")
-		if len(parts) < 3 || parts[len(parts)-1] != "SKILL.md" {
-			return ""
-		}
-		nameIndex := len(parts) - 2
-		skillsIndex := nameIndex - 1
-		if parts[skillsIndex] == ".system" {
-			skillsIndex--
-		}
-		if skillsIndex < 0 || parts[skillsIndex] != "skills" || !claudeSkillTokenRE.MatchString(parts[nameIndex]) {
-			return ""
-		}
-		return parts[nameIndex]
 	}
 	var input struct {
 		Skill string `json:"skill"`
@@ -120,6 +123,68 @@ func skillNameFromTool(provider Provider, tool *ToolCall) string {
 		return ""
 	}
 	return name
+}
+
+func skillNameFromManifestPath(path string) string {
+	parts := strings.Split(strings.ReplaceAll(path, `\`, "/"), "/")
+	if len(parts) < 3 || parts[len(parts)-1] != "SKILL.md" {
+		return ""
+	}
+	nameIndex := len(parts) - 2
+	skillsIndex := nameIndex - 1
+	if parts[skillsIndex] == ".system" {
+		skillsIndex--
+	}
+	if skillsIndex < 0 || parts[skillsIndex] != "skills" || !claudeSkillTokenRE.MatchString(parts[nameIndex]) {
+		return ""
+	}
+	return parts[nameIndex]
+}
+
+func shellTokens(command string) []string {
+	var tokens []string
+	var token strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if token.Len() > 0 {
+			tokens = append(tokens, token.String())
+			token.Reset()
+		}
+	}
+	for _, char := range command {
+		if escaped {
+			token.WriteRune(char)
+			escaped = false
+			continue
+		}
+		if char == '\\' && quote != '\'' && runtime.GOOS != "windows" {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			} else {
+				token.WriteRune(char)
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if strings.ContainsRune(" \t\r\n;|&()<>", char) {
+			flush()
+			continue
+		}
+		token.WriteRune(char)
+	}
+	if escaped {
+		token.WriteRune('\\')
+	}
+	flush()
+	return tokens
 }
 
 func readClaudeSkillContent(name, cwd string) (string, bool) {
