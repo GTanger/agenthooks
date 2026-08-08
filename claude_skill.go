@@ -182,6 +182,9 @@ func simpleShellTokens(command string) ([]string, bool) {
 	}
 	for _, char := range command {
 		if escaped {
+			if char == '$' || char == '`' || strings.ContainsRune(";|&()<>\r\n#", char) {
+				return nil, false
+			}
 			token.WriteRune(char)
 			escaped = false
 			continue

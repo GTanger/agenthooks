@@ -204,6 +204,9 @@ func TestSkillActivationOfRejectsNonReadingShellCommands(t *testing.T) {
 		`printf replacement > /repo/.agents/skills/review/SKILL.md`,
 		`sed -i 1d /repo/.agents/skills/review/SKILL.md`,
 		`cat /repo/.agents/skills/review/SKILL.md /repo/.agents/skills/deploy/SKILL.md`,
+		`cat /not-a-skill\;/repo/.agents/skills/review/SKILL.md`,
+		`cat /not-a-skill\#/repo/.agents/skills/review/SKILL.md`,
+		`sed -n 1,200p /not-a-skill\|/repo/.agents/skills/review/SKILL.md`,
 	}
 
 	for _, command := range commands {
