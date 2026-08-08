@@ -1,8 +1,6 @@
 package agenthooks
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -23,29 +21,13 @@ var (
 	claudeManagedSkillsRoot = platformClaudeManagedSkillsRoot
 )
 
-// ResolvedClaudeSkill is the manifest and provenance Claude used for one skill
-// activation. A failed resolution retains Name and leaves CaptureReady false.
-type ResolvedClaudeSkill struct {
-	// Name is the Skill tool's requested skill name.
+// SkillActivation is a normalized Skill tool invocation.
+type SkillActivation struct {
+	// Name is the activated skill name.
 	Name string
 
-	// SourceLevel is admin, personal, project, or plugin when resolved.
-	SourceLevel string
-
-	// SourcePath is the unresolved manifest path selected by Claude precedence.
-	SourcePath string
-
-	// RawSHA256 is the lowercase SHA-256 of the complete manifest.
-	RawSHA256 string
-
-	// Content is the exact manifest when it is valid UTF-8 and within the limit.
+	// Content is the exact model-visible skill manifest when the tool completed.
 	Content string
-
-	// CaptureReady reports whether Content is safe to forward.
-	CaptureReady bool
-
-	// SourceRoot is the authorized skill tree containing SourcePath.
-	SourceRoot string
 }
 
 type skillAuthorization uint8
@@ -64,39 +46,54 @@ type skillLocation struct {
 	owner         string
 }
 
-// ResolveClaudeSkill resolves and captures the manifest for a Claude Skill tool
-// activation. It follows Claude's managed, personal, project, and plugin
-// precedence while rejecting paths outside the selected skill tree.
-func ResolveClaudeSkill(name, cwd string) ResolvedClaudeSkill {
-	result := ResolvedClaudeSkill{Name: name}
+// SkillActivationOf projects a normalized Claude Skill tool event into its
+// activated name and, after completion, the exact content shown to the model.
+// It returns nil for other tools and failed activations.
+func SkillActivationOf(typed any) *SkillActivation {
+	base := EventOf(typed)
+	tool := toolOf(typed)
+	if base == nil || tool == nil || base.Provider != ProviderClaudeCode || !strings.EqualFold(tool.Name, "Skill") {
+		return nil
+	}
+	if event, ok := typed.(*ToolPostEvent); ok && event.Failed {
+		return nil
+	}
+	var input struct {
+		Skill string `json:"skill"`
+		Name  string `json:"name"`
+	}
+	if json.Unmarshal(tool.Input, &input) != nil {
+		return nil
+	}
+	name := strings.TrimSpace(input.Skill)
+	if name == "" {
+		name = strings.TrimSpace(input.Name)
+	}
+	if name == "" {
+		return nil
+	}
+	activation := &SkillActivation{Name: name, Content: ""}
+	if event, ok := typed.(*ToolPostEvent); ok {
+		_ = json.Unmarshal(event.Output, &activation.Content)
+	}
+	return activation
+}
+
+func readClaudeSkillContent(name, cwd string) (string, bool) {
 	location := resolveClaudeSkill(name, cwd)
 	if location.path == "" {
-		return result
+		return "", false
 	}
-	file, authorizedRoot, ok := openValidatedSkill(location)
+	file, _, ok := openValidatedSkill(location)
 	if !ok {
-		return result
+		return "", false
 	}
-	hasher := sha256.New()
-	content, readErr := io.ReadAll(io.LimitReader(io.TeeReader(file, hasher), maxSkillContentBytes+1))
-	if readErr == nil {
-		_, readErr = io.Copy(io.Discard, io.TeeReader(file, hasher))
-	}
+	content, readErr := io.ReadAll(io.LimitReader(file, maxSkillContentBytes+1))
 	closeErr := file.Close()
-	if readErr != nil || closeErr != nil {
-		return result
+	if readErr != nil || closeErr != nil || len(content) > maxSkillContentBytes || !utf8.Valid(content) {
+		return "", false
 	}
-
-	result.SourceLevel = location.level
-	result.SourcePath = filepath.Clean(location.path)
-	result.RawSHA256 = hex.EncodeToString(hasher.Sum(nil))
-	result.SourceRoot = authorizedRoot
-	if len(content) > maxSkillContentBytes || !utf8.Valid(content) {
-		return result
-	}
-	result.Content = string(content)
-	result.CaptureReady = true
-	return result
+	return string(content), true
 }
 
 // Claude reports only the skill name in PostToolUse, although the model receives
@@ -112,11 +109,11 @@ func backfillClaudeSkillOutput(event *ToolPostEvent) {
 	if json.Unmarshal(event.Tool.Input, &input) != nil {
 		return
 	}
-	resolved := ResolveClaudeSkill(strings.TrimSpace(input.Skill), event.Session.CWD)
-	if !resolved.CaptureReady {
+	content, ok := readClaudeSkillContent(strings.TrimSpace(input.Skill), event.Session.CWD)
+	if !ok {
 		return
 	}
-	if output, err := json.Marshal(resolved.Content); err == nil {
+	if output, err := json.Marshal(content); err == nil {
 		event.Output = output
 	}
 }
