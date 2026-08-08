@@ -58,6 +58,9 @@ func SkillActivationOf(typed any) *SkillActivation {
 	if base == nil || tool == nil {
 		return nil
 	}
+	if base.Provider == ProviderCursor && base.NativeName == "beforeReadFile" {
+		return nil
+	}
 	if event, ok := typed.(*ToolPostEvent); ok && event.Failed {
 		return nil
 	}
