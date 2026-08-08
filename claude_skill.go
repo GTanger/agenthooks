@@ -18,6 +18,7 @@ const (
 
 var (
 	claudeSkillTokenRE      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	sedPrintRangeRE         = regexp.MustCompile(`^[0-9]+(,[0-9]+)?p$`)
 	claudeManagedSkillsRoot = platformClaudeManagedSkillsRoot
 )
 
@@ -111,13 +112,7 @@ func skillNameFromTool(provider Provider, tool *ToolCall) string {
 			if json.Unmarshal(tool.Input, &input) != nil {
 				return ""
 			}
-			var name string
-			for _, token := range shellTokens(input.Command) {
-				if candidate := skillNameFromManifestPath(token); candidate != "" {
-					name = candidate
-				}
-			}
-			return name
+			return skillNameFromShellCommand(input.Command)
 		default:
 			return ""
 		}
@@ -155,7 +150,26 @@ func skillNameFromManifestPath(path string) string {
 	return parts[nameIndex]
 }
 
-func shellTokens(command string) []string {
+func skillNameFromShellCommand(command string) string {
+	tokens, ok := simpleShellTokens(command)
+	if !ok || len(tokens) < 2 {
+		return ""
+	}
+
+	switch filepath.Base(tokens[0]) {
+	case "cat":
+		if len(tokens) == 2 {
+			return skillNameFromManifestPath(tokens[1])
+		}
+	case "sed":
+		if len(tokens) == 4 && tokens[1] == "-n" && sedPrintRangeRE.MatchString(tokens[2]) {
+			return skillNameFromManifestPath(tokens[3])
+		}
+	}
+	return ""
+}
+
+func simpleShellTokens(command string) ([]string, bool) {
 	var tokens []string
 	var token strings.Builder
 	var quote rune
@@ -171,6 +185,9 @@ func shellTokens(command string) []string {
 			token.WriteRune(char)
 			escaped = false
 			continue
+		}
+		if char == '$' || char == '`' {
+			return nil, false
 		}
 		if char == '\\' && quote != '\'' && runtime.GOOS != "windows" {
 			escaped = true
@@ -188,17 +205,20 @@ func shellTokens(command string) []string {
 			quote = char
 			continue
 		}
-		if strings.ContainsRune(" \t\r\n;|&()<>", char) {
+		if strings.ContainsRune(";|&()<>\r\n#", char) {
+			return nil, false
+		}
+		if char == ' ' || char == '\t' {
 			flush()
 			continue
 		}
 		token.WriteRune(char)
 	}
-	if escaped {
-		token.WriteRune('\\')
+	if escaped || quote != 0 {
+		return nil, false
 	}
 	flush()
-	return tokens
+	return tokens, true
 }
 
 func readClaudeSkillContent(name, cwd string) (string, bool) {
@@ -380,7 +400,7 @@ func resolveClaudePluginSkill(plugin, skill, cwd string) skillLocation {
 	if len(candidates) != 1 {
 		return skillLocation{}
 	}
-	for _, dir := range []string{filepath.Join(candidates[0].installPath, "skills", skill), candidates[0].installPath} {
+	for _, dir := range []string{filepath.Join(candidates[0].installPath, "skills", skill), filepath.Join(candidates[0].installPath, skill)} {
 		if path := existingSkillManifest(dir); path != "" {
 			return exactSkillLocation(path, "plugin", candidates[0].installPath)
 		}

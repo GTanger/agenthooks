@@ -57,7 +57,7 @@ func TestResolveClaudeSkillUsesApplicablePluginRecord(t *testing.T) {
 	projectInstall := filepath.Join(t.TempDir(), "project-plugin")
 	userInstall := filepath.Join(t.TempDir(), "user-plugin")
 	writeClaudeSkillManifest(t, filepath.Join(projectInstall, "skills", "review"), "project plugin")
-	writeClaudeSkillManifest(t, filepath.Join(userInstall, "skills", "review"), "user plugin")
+	writeClaudeSkillManifest(t, filepath.Join(userInstall, "review"), "user plugin")
 	registry := map[string]any{
 		"version": 2,
 		"plugins": map[string]any{
@@ -83,6 +83,11 @@ func TestResolveClaudeSkillUsesApplicablePluginRecord(t *testing.T) {
 
 	if !ok || content != "project plugin" {
 		t.Fatalf("readClaudeSkillContent() = %q, %t", content, ok)
+	}
+
+	content, ok = readClaudeSkillContent("quality:review", t.TempDir())
+	if !ok || content != "user plugin" {
+		t.Fatalf("readClaudeSkillContent() direct plugin layout = %q, %t", content, ok)
 	}
 }
 
@@ -167,6 +172,52 @@ func TestSkillActivationOfShellRead(t *testing.T) {
 	activation := SkillActivationOf(event)
 	if activation == nil || activation.Name != "review" || activation.ContentAvailable {
 		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
+
+func TestSkillActivationOfShellCatRead(t *testing.T) {
+	event := &ToolPreEvent{
+		Event: Event{Provider: ProviderCodex, Kind: KindToolPre},
+		Tool: ToolCall{
+			Name:      "Bash",
+			Canonical: ToolShell,
+			Input:     json.RawMessage(`{"command":"cat /repo/.agents/skills/review/SKILL.md"}`),
+		},
+	}
+
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Name != "review" || activation.ContentAvailable {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
+
+func TestSkillActivationOfRejectsNonReadingShellCommands(t *testing.T) {
+	commands := []string{
+		`# cat /repo/.agents/skills/review/SKILL.md`,
+		`cat /repo/.agents/skills/review/SKILL.md # activate review`,
+		`echo /repo/.agents/skills/review/SKILL.md`,
+		`printf '%s\n' /repo/.agents/skills/review/SKILL.md`,
+		`test -f /repo/.agents/skills/review/SKILL.md`,
+		`cat /repo/.agents/skills/review/SKILL.md > /tmp/review`,
+		`cat --help /repo/.agents/skills/review/SKILL.md`,
+		`cat "$(printf /repo)/.agents/skills/review/SKILL.md"`,
+		`printf replacement > /repo/.agents/skills/review/SKILL.md`,
+		`sed -i 1d /repo/.agents/skills/review/SKILL.md`,
+		`cat /repo/.agents/skills/review/SKILL.md /repo/.agents/skills/deploy/SKILL.md`,
+	}
+
+	for _, command := range commands {
+		input, err := json.Marshal(map[string]string{"command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := &ToolPreEvent{
+			Event: Event{Provider: ProviderCodex, Kind: KindToolPre},
+			Tool:  ToolCall{Name: "Bash", Canonical: ToolShell, Input: input},
+		}
+		if activation := SkillActivationOf(event); activation != nil {
+			t.Errorf("SkillActivationOf(%q) = %+v", command, activation)
+		}
 	}
 }
 
