@@ -28,6 +28,9 @@ type SkillActivation struct {
 
 	// Content is the exact model-visible skill manifest when the tool completed.
 	Content string
+
+	// ContentAvailable reports whether Content came from a completed tool event.
+	ContentAvailable bool
 }
 
 type skillAuthorization uint8
@@ -62,9 +65,9 @@ func SkillActivationOf(typed any) *SkillActivation {
 	if name == "" {
 		return nil
 	}
-	activation := &SkillActivation{Name: name, Content: ""}
+	activation := &SkillActivation{Name: name, Content: "", ContentAvailable: false}
 	if event, ok := typed.(*ToolPostEvent); ok {
-		_ = json.Unmarshal(event.Output, &activation.Content)
+		activation.ContentAvailable = json.Unmarshal(event.Output, &activation.Content) == nil
 	}
 	return activation
 }

@@ -89,7 +89,7 @@ func TestDecodeClaudeSkillPostToolUseBackfillsModelOutput(t *testing.T) {
 		t.Fatalf("Output = %q, want %q", output, content)
 	}
 	activation := SkillActivationOf(event)
-	if activation == nil || activation.Name != "review" || activation.Content != content {
+	if activation == nil || activation.Name != "review" || activation.Content != content || !activation.ContentAvailable {
 		t.Fatalf("SkillActivationOf() = %+v", activation)
 	}
 	if string(event.Raw) != string(payload) {

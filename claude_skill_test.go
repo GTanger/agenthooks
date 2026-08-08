@@ -149,7 +149,7 @@ func TestSkillActivationOfFileRead(t *testing.T) {
 	}
 
 	activation := SkillActivationOf(event)
-	if activation == nil || activation.Name != "review" || activation.Content != "review content" {
+	if activation == nil || activation.Name != "review" || activation.Content != "review content" || !activation.ContentAvailable {
 		t.Fatalf("SkillActivationOf() = %+v", activation)
 	}
 }
