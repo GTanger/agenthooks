@@ -47,6 +47,11 @@ func TestDecodeClaudePreToolUse(t *testing.T) {
 func TestDecodeClaudeSkillPostToolUseBackfillsModelOutput(t *testing.T) {
 	content := "---\nname: review\n---\n\nInspect the change.\n"
 	cwd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(cwd, "unused-config"))
+	originalManagedRoot := claudeManagedSkillsRoot
+	claudeManagedSkillsRoot = func() string { return "" }
+	t.Cleanup(func() { claudeManagedSkillsRoot = originalManagedRoot })
 	skillDir := filepath.Join(cwd, ".claude", "skills", "review")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatal(err)

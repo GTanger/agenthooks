@@ -1,6 +1,8 @@
 package agenthooks
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -8,14 +10,94 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
-	maxClaudeSkillBytes          = 1 << 20
-	maxClaudePluginRegistryBytes = 1 << 20
+	maxSkillContentBytes        = 65_536
+	maxClaudePluginRegistrySize = 1 << 20
 )
 
-var claudeSkillTokenRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var (
+	claudeSkillTokenRE      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	claudeManagedSkillsRoot = platformClaudeManagedSkillsRoot
+)
+
+// ResolvedClaudeSkill is the manifest and provenance Claude used for one skill
+// activation. A failed resolution retains Name and leaves CaptureReady false.
+type ResolvedClaudeSkill struct {
+	// Name is the Skill tool's requested skill name.
+	Name string
+
+	// SourceLevel is admin, personal, project, or plugin when resolved.
+	SourceLevel string
+
+	// SourcePath is the unresolved manifest path selected by Claude precedence.
+	SourcePath string
+
+	// RawSHA256 is the lowercase SHA-256 of the complete manifest.
+	RawSHA256 string
+
+	// Content is the exact manifest when it is valid UTF-8 and within the limit.
+	Content string
+
+	// CaptureReady reports whether Content is safe to forward.
+	CaptureReady bool
+
+	// SourceRoot is the authorized skill tree containing SourcePath.
+	SourceRoot string
+}
+
+type skillAuthorization uint8
+
+const (
+	skillAuthorizationExact skillAuthorization = iota
+	skillAuthorizationProject
+	skillAuthorizationPersonal
+)
+
+type skillLocation struct {
+	path          string
+	level         string
+	root          string
+	authorization skillAuthorization
+	owner         string
+}
+
+// ResolveClaudeSkill resolves and captures the manifest for a Claude Skill tool
+// activation. It follows Claude's managed, personal, project, and plugin
+// precedence while rejecting paths outside the selected skill tree.
+func ResolveClaudeSkill(name, cwd string) ResolvedClaudeSkill {
+	result := ResolvedClaudeSkill{Name: name}
+	location := resolveClaudeSkill(name, cwd)
+	if location.path == "" {
+		return result
+	}
+	file, authorizedRoot, ok := openValidatedSkill(location)
+	if !ok {
+		return result
+	}
+	hasher := sha256.New()
+	content, readErr := io.ReadAll(io.LimitReader(io.TeeReader(file, hasher), maxSkillContentBytes+1))
+	if readErr == nil {
+		_, readErr = io.Copy(io.Discard, io.TeeReader(file, hasher))
+	}
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		return result
+	}
+
+	result.SourceLevel = location.level
+	result.SourcePath = filepath.Clean(location.path)
+	result.RawSHA256 = hex.EncodeToString(hasher.Sum(nil))
+	result.SourceRoot = authorizedRoot
+	if len(content) > maxSkillContentBytes || !utf8.Valid(content) {
+		return result
+	}
+	result.Content = string(content)
+	result.CaptureReady = true
+	return result
+}
 
 // Claude reports only the skill name in PostToolUse, although the model receives
 // the resolved manifest. Resolve the same local skill so Output reflects the
@@ -30,79 +112,100 @@ func backfillClaudeSkillOutput(event *ToolPostEvent) {
 	if json.Unmarshal(event.Tool.Input, &input) != nil {
 		return
 	}
-	path := resolveClaudeSkillPath(strings.TrimSpace(input.Skill), event.Session.CWD)
-	if path == "" {
+	resolved := ResolveClaudeSkill(strings.TrimSpace(input.Skill), event.Session.CWD)
+	if !resolved.CaptureReady {
 		return
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	content, readErr := io.ReadAll(io.LimitReader(file, maxClaudeSkillBytes+1))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || len(content) > maxClaudeSkillBytes {
-		return
-	}
-	if output, err := json.Marshal(string(content)); err == nil {
+	if output, err := json.Marshal(resolved.Content); err == nil {
 		event.Output = output
 	}
 }
 
-func resolveClaudeSkillPath(name, cwd string) string {
+func resolveClaudeSkill(name, cwd string) skillLocation {
 	if plugin, skill, ok := strings.Cut(name, ":"); ok {
 		if !claudeSkillTokenRE.MatchString(plugin) || !claudeSkillTokenRE.MatchString(skill) || strings.Contains(skill, ":") {
-			return ""
+			return skillLocation{}
 		}
-		return resolveClaudePluginSkillPath(plugin, skill, cwd)
+		return resolveClaudePluginSkill(plugin, skill, cwd)
 	}
 	if !claudeSkillTokenRE.MatchString(name) {
-		return ""
+		return skillLocation{}
+	}
+	if root := claudeManagedSkillsRoot(); root != "" {
+		path := filepath.Join(root, name, "SKILL.md")
+		info, err := os.Stat(path)
+		switch {
+		case err == nil && info.Mode().IsRegular():
+			if readableRegularFile(path) {
+				return exactSkillLocation(path, "admin", root)
+			}
+			return skillLocation{}
+		case err != nil && !os.IsNotExist(err):
+			return skillLocation{}
+		}
 	}
 
-	managedRoot := ""
-	switch runtime.GOOS {
-	case "darwin":
-		managedRoot = "/Library/Application Support/ClaudeCode/.claude/skills"
-	case "linux":
-		managedRoot = "/etc/claude-code/.claude/skills"
-	case "windows":
-		managedRoot = `C:\Program Files\ClaudeCode\.claude\skills`
+	home, _ := os.UserHomeDir()
+	configRoot := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+	if configRoot == "" && home != "" {
+		configRoot = filepath.Join(home, ".claude")
 	}
-	if path := existingClaudeSkillManifest(managedRoot, name); path != "" {
-		return path
-	}
-
-	if configRoot := claudeConfigRoot(); configRoot != "" {
-		if path := existingClaudeSkillManifest(filepath.Join(configRoot, "skills"), name); path != "" {
-			return path
+	if configRoot != "" {
+		root := filepath.Join(configRoot, "skills")
+		if path := existingSkillManifest(filepath.Join(root, name)); path != "" {
+			if home != "" && filepath.Clean(configRoot) == filepath.Join(filepath.Clean(home), ".claude") {
+				return personalSkillLocation(path, "personal", root, home)
+			}
+			return exactSkillLocation(path, "personal", root)
 		}
 	}
 	if filepath.IsAbs(cwd) {
 		for dir := cwd; ; dir = filepath.Dir(dir) {
-			if path := existingClaudeSkillManifest(filepath.Join(dir, ".claude", "skills"), name); path != "" {
-				return path
+			root := filepath.Join(dir, ".claude", "skills")
+			if path := existingSkillManifest(filepath.Join(root, name)); path != "" {
+				return projectSkillLocation(path, "project", root, dir)
 			}
-			if pathExists(filepath.Join(dir, ".git")) || filepath.Dir(dir) == dir {
+			if pathExists(filepath.Join(dir, ".git")) {
+				break
+			}
+			if parent := filepath.Dir(dir); parent == dir {
 				break
 			}
 		}
 	}
-	return ""
+	return skillLocation{}
 }
 
-func resolveClaudePluginSkillPath(plugin, skill, cwd string) string {
-	configRoot := claudeConfigRoot()
+func platformClaudeManagedSkillsRoot() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/ClaudeCode/.claude/skills"
+	case "linux":
+		return "/etc/claude-code/.claude/skills"
+	case "windows":
+		return `C:\Program Files\ClaudeCode\.claude\skills`
+	default:
+		return ""
+	}
+}
+
+func resolveClaudePluginSkill(plugin, skill, cwd string) skillLocation {
+	home, _ := os.UserHomeDir()
+	configRoot := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+	if configRoot == "" && home != "" {
+		configRoot = filepath.Join(home, ".claude")
+	}
 	if configRoot == "" {
-		return ""
+		return skillLocation{}
 	}
-	file, err := os.Open(filepath.Join(configRoot, "plugins", "installed_plugins.json"))
+	registryFile, err := os.Open(filepath.Join(configRoot, "plugins", "installed_plugins.json"))
 	if err != nil {
-		return ""
+		return skillLocation{}
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxClaudePluginRegistryBytes+1))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || len(data) > maxClaudePluginRegistryBytes {
-		return ""
+	data, readErr := io.ReadAll(io.LimitReader(registryFile, maxClaudePluginRegistrySize+1))
+	closeErr := registryFile.Close()
+	if readErr != nil || closeErr != nil || len(data) > maxClaudePluginRegistrySize {
+		return skillLocation{}
 	}
 	var registry struct {
 		Version int `json:"version"`
@@ -113,7 +216,7 @@ func resolveClaudePluginSkillPath(plugin, skill, cwd string) string {
 		} `json:"plugins"`
 	}
 	if json.Unmarshal(data, &registry) != nil || registry.Version != 2 {
-		return ""
+		return skillLocation{}
 	}
 
 	type candidate struct {
@@ -122,8 +225,8 @@ func resolveClaudePluginSkillPath(plugin, skill, cwd string) string {
 	}
 	var projectCandidates, userCandidates []candidate
 	for key, records := range registry.Plugins {
-		name, _, _ := strings.Cut(key, "@")
-		if name != plugin {
+		prefix, _, _ := strings.Cut(key, "@")
+		if prefix != plugin {
 			continue
 		}
 		for _, record := range records {
@@ -144,7 +247,9 @@ func resolveClaudePluginSkillPath(plugin, skill, cwd string) string {
 	if len(projectCandidates) > 0 {
 		longest := 0
 		for _, candidate := range projectCandidates {
-			longest = max(longest, len(filepath.Clean(candidate.projectPath)))
+			if len(filepath.Clean(candidate.projectPath)) > longest {
+				longest = len(filepath.Clean(candidate.projectPath))
+			}
 		}
 		candidates = nil
 		for _, candidate := range projectCandidates {
@@ -154,36 +259,140 @@ func resolveClaudePluginSkillPath(plugin, skill, cwd string) string {
 		}
 	}
 	if len(candidates) != 1 {
-		return ""
+		return skillLocation{}
 	}
-	for _, root := range []string{filepath.Join(candidates[0].installPath, "skills"), candidates[0].installPath} {
-		if path := existingClaudeSkillManifest(root, skill); path != "" {
-			return path
+	for _, dir := range []string{filepath.Join(candidates[0].installPath, "skills", skill), candidates[0].installPath} {
+		if path := existingSkillManifest(dir); path != "" {
+			return exactSkillLocation(path, "plugin", candidates[0].installPath)
 		}
 	}
-	return ""
+	return skillLocation{}
 }
 
-func claudeConfigRoot() string {
-	if root := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); root != "" {
-		return root
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
+func exactSkillLocation(path, level, root string) skillLocation {
+	return skillLocation{path: path, level: level, root: root, authorization: skillAuthorizationExact}
 }
 
-func existingClaudeSkillManifest(root, name string) string {
-	if root == "" {
-		return ""
-	}
-	path := filepath.Join(root, name, "SKILL.md")
-	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+func projectSkillLocation(path, level, root, owner string) skillLocation {
+	return skillLocation{path: path, level: level, root: root, authorization: skillAuthorizationProject, owner: owner}
+}
+
+func personalSkillLocation(path, level, root, owner string) skillLocation {
+	return skillLocation{path: path, level: level, root: root, authorization: skillAuthorizationPersonal, owner: owner}
+}
+
+func existingSkillManifest(dir string) string {
+	path := filepath.Join(dir, "SKILL.md")
+	info, err := os.Stat(path)
+	if err == nil && info.Mode().IsRegular() {
 		return path
 	}
 	return ""
+}
+
+func readableRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	openedInfo, statErr := file.Stat()
+	closeErr := file.Close()
+	return statErr == nil && openedInfo.Mode().IsRegular() && closeErr == nil
+}
+
+func openValidatedSkill(location skillLocation) (*os.File, string, bool) {
+	if !filepath.IsAbs(location.path) || !filepath.IsAbs(location.root) {
+		return nil, "", false
+	}
+	resolved, err := filepath.EvalSymlinks(location.path)
+	if err != nil {
+		return nil, "", false
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(location.root)
+	if err != nil {
+		return nil, "", false
+	}
+	authorizedRoot, ok := authorizedSkillRoot(location, resolvedRoot, resolved)
+	if !ok {
+		return nil, "", false
+	}
+	rootDir, err := os.OpenRoot(filepath.Dir(resolved))
+	if err != nil {
+		return nil, "", false
+	}
+	name := filepath.Base(resolved)
+	info, err := rootDir.Stat(name)
+	if err != nil || !info.Mode().IsRegular() {
+		_ = rootDir.Close()
+		return nil, "", false
+	}
+	file, err := rootDir.Open(name)
+	closeRootErr := rootDir.Close()
+	if err != nil || closeRootErr != nil {
+		if file != nil {
+			_ = file.Close()
+		}
+		return nil, "", false
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, "", false
+	}
+	return file, authorizedRoot, true
+}
+
+func authorizedSkillRoot(location skillLocation, resolvedRoot, resolvedPath string) (string, bool) {
+	switch location.authorization {
+	case skillAuthorizationProject, skillAuthorizationPersonal:
+		if !filepath.IsAbs(location.owner) {
+			return "", false
+		}
+		resolvedOwner, err := filepath.EvalSymlinks(location.owner)
+		if err != nil {
+			return "", false
+		}
+		allowedRoots := providerSkillRoots(resolvedOwner)
+		if !pathWithinAny(resolvedRoot, allowedRoots) {
+			return "", false
+		}
+		sourceRoots := providerSkillRoots(location.owner)
+		for i, root := range allowedRoots {
+			if pathWithin(resolvedPath, root) {
+				return filepath.Clean(sourceRoots[i]), true
+			}
+		}
+		return "", false
+	case skillAuthorizationExact:
+		resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(location.root))
+		if err == nil && pathWithin(resolvedRoot, resolvedParent) && pathWithin(resolvedPath, resolvedRoot) {
+			return filepath.Clean(location.root), true
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+func providerSkillRoots(owner string) []string {
+	roots := make([]string, 0, 4)
+	for _, provider := range []string{".agents", ".claude", ".codex", ".cursor"} {
+		roots = append(roots, filepath.Join(owner, provider, "skills"))
+	}
+	return roots
+}
+
+func pathWithinAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if pathWithin(path, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func pathWithin(path, root string) bool {
