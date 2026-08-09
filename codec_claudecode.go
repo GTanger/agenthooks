@@ -85,7 +85,11 @@ func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []
 	if in.AgentID != "" || in.AgentType != "" {
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: in.AgentType}
 	}
-	return buildClaudeShaped(base, &in), nil
+	typed := buildClaudeShaped(base, &in)
+	if event, ok := typed.(*ToolPostEvent); ok {
+		backfillClaudeSkillOutput(event)
+	}
+	return typed, nil
 }
 
 // buildClaudeShaped constructs typed events from the Claude-shaped wire form.
