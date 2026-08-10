@@ -239,6 +239,12 @@ func readClaudeSkillContent(name, cwd string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	return readBoundedManifest(file)
+}
+
+// readBoundedManifest drains and closes an opened manifest under the bounds
+// every capture path shares: at most maxSkillContentBytes of valid UTF-8.
+func readBoundedManifest(file *os.File) (string, bool) {
 	content, readErr := io.ReadAll(io.LimitReader(file, maxSkillContentBytes+1))
 	closeErr := file.Close()
 	if readErr != nil || closeErr != nil || len(content) > maxSkillContentBytes || !utf8.Valid(content) {
