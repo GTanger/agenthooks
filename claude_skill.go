@@ -92,30 +92,7 @@ func SkillActivationOf(typed any) *SkillActivation {
 
 func skillNameFromTool(provider Provider, tool *ToolCall) string {
 	if provider != ProviderClaudeCode || !strings.EqualFold(tool.Name, "Skill") {
-		switch tool.Canonical {
-		case ToolFileRead:
-			var input struct {
-				FilePath string `json:"file_path"`
-				Path     string `json:"path"`
-			}
-			if json.Unmarshal(tool.Input, &input) != nil {
-				return ""
-			}
-			if input.FilePath != "" {
-				return skillNameFromManifestPath(input.FilePath)
-			}
-			return skillNameFromManifestPath(input.Path)
-		case ToolShell:
-			var input struct {
-				Command string `json:"command"`
-			}
-			if json.Unmarshal(tool.Input, &input) != nil {
-				return ""
-			}
-			return skillNameFromShellCommand(input.Command)
-		default:
-			return ""
-		}
+		return skillNameFromManifestPath(skillManifestPathFromTool(tool))
 	}
 	var input struct {
 		Skill string `json:"skill"`
@@ -134,6 +111,35 @@ func skillNameFromTool(provider Provider, tool *ToolCall) string {
 	return name
 }
 
+// skillManifestPathFromTool returns the SKILL.md path an implicit
+// skill-loading tool call reads, or "" when the call is not one.
+func skillManifestPathFromTool(tool *ToolCall) string {
+	switch tool.Canonical {
+	case ToolFileRead:
+		var input struct {
+			FilePath string `json:"file_path"`
+			Path     string `json:"path"`
+		}
+		if json.Unmarshal(tool.Input, &input) != nil {
+			return ""
+		}
+		if input.FilePath != "" {
+			return input.FilePath
+		}
+		return input.Path
+	case ToolShell:
+		var input struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(tool.Input, &input) != nil {
+			return ""
+		}
+		return skillManifestPathFromShellCommand(input.Command)
+	default:
+		return ""
+	}
+}
+
 func skillNameFromManifestPath(path string) string {
 	parts := strings.Split(strings.ReplaceAll(path, `\`, "/"), "/")
 	if len(parts) < 3 || parts[len(parts)-1] != "SKILL.md" {
@@ -150,7 +156,7 @@ func skillNameFromManifestPath(path string) string {
 	return parts[nameIndex]
 }
 
-func skillNameFromShellCommand(command string) string {
+func skillManifestPathFromShellCommand(command string) string {
 	tokens, ok := simpleShellTokens(command)
 	if !ok || len(tokens) < 2 {
 		return ""
@@ -159,11 +165,11 @@ func skillNameFromShellCommand(command string) string {
 	switch filepath.Base(tokens[0]) {
 	case "cat":
 		if len(tokens) == 2 {
-			return skillNameFromManifestPath(tokens[1])
+			return tokens[1]
 		}
 	case "sed":
 		if len(tokens) == 4 && tokens[1] == "-n" && sedPrintRangeRE.MatchString(tokens[2]) {
-			return skillNameFromManifestPath(tokens[3])
+			return tokens[3]
 		}
 	}
 	return ""
@@ -241,26 +247,68 @@ func readClaudeSkillContent(name, cwd string) (string, bool) {
 	return string(content), true
 }
 
-// Claude reports only the skill name in PostToolUse, although the model receives
-// the resolved manifest. Resolve the same local skill so Output reflects the
-// model-visible content; Event.Raw retains Claude's response verbatim.
-func backfillClaudeSkillOutput(event *ToolPostEvent) {
-	if event.Failed || !strings.EqualFold(event.Tool.Name, "Skill") {
+// backfillSkillOutput ensures every completed skill activation carries the
+// manifest as a bare string in Output, whatever the provider reported: Claude's
+// Skill tool responds with only the skill name, and implicit SKILL.md reads
+// arrive wrapped in tool-specific response envelopes. Both are resolved to the
+// local manifest so SkillActivationOf sees the same content shape on every
+// provider; Event.Raw retains the provider response verbatim.
+func backfillSkillOutput(event *ToolPostEvent) {
+	if event.Failed {
 		return
 	}
-	var input struct {
-		Skill string `json:"skill"`
-	}
-	if json.Unmarshal(event.Tool.Input, &input) != nil {
+	if trimmed := strings.TrimSpace(string(event.Output)); strings.HasPrefix(trimmed, `"`) {
 		return
 	}
-	content, ok := readClaudeSkillContent(strings.TrimSpace(input.Skill), event.Session.CWD)
+	var content string
+	var ok bool
+	if event.Provider == ProviderClaudeCode && strings.EqualFold(event.Tool.Name, "Skill") {
+		name := skillNameFromTool(event.Provider, &event.Tool)
+		if name == "" {
+			return
+		}
+		content, ok = readClaudeSkillContent(name, event.Session.CWD)
+	} else {
+		path := skillManifestPathFromTool(&event.Tool)
+		if skillNameFromManifestPath(path) == "" {
+			return
+		}
+		content, ok = readSkillManifestFile(path, event.Session.CWD)
+	}
 	if !ok {
 		return
 	}
 	if output, err := json.Marshal(content); err == nil {
 		event.Output = output
 	}
+}
+
+// readSkillManifestFile reads the manifest an implicit activation loaded,
+// under the same bounds the Skill-tool resolution applies. A relative path is
+// anchored at the session's working directory.
+func readSkillManifestFile(path, cwd string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		if !filepath.IsAbs(cwd) {
+			return "", false
+		}
+		path = filepath.Join(cwd, path)
+	}
+	if !readableRegularFile(path) {
+		return "", false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	content, readErr := io.ReadAll(io.LimitReader(file, maxSkillContentBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(content) > maxSkillContentBytes || !utf8.Valid(content) {
+		return "", false
+	}
+	return string(content), true
 }
 
 func resolveClaudeSkill(name, cwd string) skillLocation {

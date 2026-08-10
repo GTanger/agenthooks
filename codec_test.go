@@ -73,7 +73,7 @@ func TestDecodeClaudeSkillPostToolUseBackfillsModelOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, payload)
+	typed, err := decodePayload(ProviderClaudeCode, VariantUnknown, DetectionConfig, testNow, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,5 +476,45 @@ func TestDetectFromShape(t *testing.T) {
 		if !ok || got != c.want {
 			t.Errorf("detectFromShape(%s) = %q ok=%v, want %q", c.payload, got, ok, c.want)
 		}
+	}
+}
+
+func TestDecodeCodexImplicitSkillReadBackfillsManifestOutput(t *testing.T) {
+	content := "---\nname: review\n---\n\nInspect the change.\n"
+	cwd := t.TempDir()
+	skillDir := filepath.Join(cwd, ".agents", "skills", "review")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"session_id":      "sess-codex-skill",
+		"cwd":             cwd,
+		"hook_event_name": "PostToolUse",
+		"tool_name":       "shell",
+		"tool_input":      map[string]any{"command": "cat .agents/skills/review/SKILL.md"},
+		"tool_response":   map[string]any{"output": "---\nname: review\n---", "metadata": map[string]any{"exit_code": 0}},
+		"tool_use_id":     "call_skill",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	typed, err := decodePayload(ProviderCodex, VariantUnknown, DetectionConfig, testNow, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := typed.(*ToolPostEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPostEvent", typed)
+	}
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Name != "review" || activation.Content != content || !activation.ContentAvailable || activation.Explicit {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+	if string(event.Raw) != string(payload) {
+		t.Error("Raw must remain byte-identical to the provider payload")
 	}
 }

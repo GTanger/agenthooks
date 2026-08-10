@@ -41,23 +41,35 @@ func noOpResponse(p Provider) wireResponse {
 
 func joinContext(ss []string) string { return strings.Join(ss, "\n") }
 
-// decodePayload turns a provider payload into a typed event.
+// decodePayload turns a provider payload into a typed event. Completed tool
+// events pass through the skill backfill so every provider reports an
+// activated skill's manifest content the same way.
 func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+	var typed any
+	var err error
 	switch p {
 	case ProviderClaudeCode:
-		return decodeClaude(v, conf, now, payload)
+		typed, err = decodeClaude(v, conf, now, payload)
 	case ProviderCodex:
-		return decodeCodex(v, conf, now, payload)
+		typed, err = decodeCodex(v, conf, now, payload)
 	case ProviderCursor:
-		return decodeCursor(v, conf, now, payload)
+		typed, err = decodeCursor(v, conf, now, payload)
 	case ProviderGemini:
-		return decodeGemini(v, conf, now, payload)
+		typed, err = decodeGemini(v, conf, now, payload)
 	case ProviderOpenCode:
-		return decodeOpenCodeLine(v, conf, now, payload)
+		typed, err = decodeOpenCodeLine(v, conf, now, payload)
 	case ProviderKimi:
-		return decodeKimi(v, conf, now, payload)
+		typed, err = decodeKimi(v, conf, now, payload)
+	default:
+		return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
 	}
-	return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
+	if err != nil {
+		return nil, err
+	}
+	if event, ok := typed.(*ToolPostEvent); ok {
+		backfillSkillOutput(event)
+	}
+	return typed, nil
 }
 
 // encodeDecision translates a decision into the provider's dialect.

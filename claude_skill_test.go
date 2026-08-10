@@ -238,3 +238,94 @@ func TestSkillActivationOfIgnoresPermissionPreview(t *testing.T) {
 		t.Fatalf("SkillActivationOf() = %+v", activation)
 	}
 }
+
+func TestBackfillSkillOutputImplicitFileRead(t *testing.T) {
+	content := "---\nname: review\n---\n\nInspect the change.\n"
+	repo := t.TempDir()
+	writeClaudeSkillManifest(t, filepath.Join(repo, ".agents", "skills", "review"), content)
+	manifest := filepath.Join(repo, ".agents", "skills", "review", "SKILL.md")
+	event := &ToolPostEvent{
+		Event: Event{Provider: ProviderCursor, Kind: KindToolPost, Session: SessionInfo{CWD: repo}},
+		Tool: ToolCall{
+			Name:      "read_file",
+			Canonical: ToolFileRead,
+			Input:     json.RawMessage(`{"file_path":` + mustJSON(t, manifest) + `}`),
+		},
+		Output: json.RawMessage(`{"success":true,"linesRead":5}`),
+	}
+
+	backfillSkillOutput(event)
+
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Content != content || !activation.ContentAvailable || activation.Explicit {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
+
+func TestBackfillSkillOutputImplicitShellCatRelativePath(t *testing.T) {
+	content := "---\nname: review\n---\n\nInspect the change.\n"
+	repo := t.TempDir()
+	writeClaudeSkillManifest(t, filepath.Join(repo, ".agents", "skills", "review"), content)
+	event := &ToolPostEvent{
+		Event: Event{Provider: ProviderCodex, Kind: KindToolPost, Session: SessionInfo{CWD: repo}},
+		Tool: ToolCall{
+			Name:      "Bash",
+			Canonical: ToolShell,
+			Input:     json.RawMessage(`{"command":"cat .agents/skills/review/SKILL.md"}`),
+		},
+		Output: json.RawMessage(`{"output":"---\nname: review\n---","metadata":{"exit_code":0}}`),
+	}
+
+	backfillSkillOutput(event)
+
+	activation := SkillActivationOf(event)
+	if activation == nil || activation.Content != content || !activation.ContentAvailable {
+		t.Fatalf("SkillActivationOf() = %+v", activation)
+	}
+}
+
+func TestBackfillSkillOutputKeepsStringOutput(t *testing.T) {
+	event := &ToolPostEvent{
+		Event: Event{Provider: ProviderCursor, Kind: KindToolPost},
+		Tool: ToolCall{
+			Name:      "read_file",
+			Canonical: ToolFileRead,
+			Input:     json.RawMessage(`{"file_path":"/repo/.agents/skills/review/SKILL.md"}`),
+		},
+		Output: json.RawMessage(`"model-visible content"`),
+	}
+
+	backfillSkillOutput(event)
+
+	if string(event.Output) != `"model-visible content"` {
+		t.Fatalf("Output = %s, want provider string untouched", event.Output)
+	}
+}
+
+func TestBackfillSkillOutputIgnoresNonSkillReads(t *testing.T) {
+	original := json.RawMessage(`{"success":true}`)
+	event := &ToolPostEvent{
+		Event: Event{Provider: ProviderCursor, Kind: KindToolPost},
+		Tool: ToolCall{
+			Name:      "read_file",
+			Canonical: ToolFileRead,
+			Input:     json.RawMessage(`{"file_path":"/repo/README.md"}`),
+		},
+		Output: original,
+	}
+
+	backfillSkillOutput(event)
+
+	if string(event.Output) != string(original) {
+		t.Fatalf("Output = %s, want untouched", event.Output)
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
