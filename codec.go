@@ -56,6 +56,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeOpenCodeLine(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
+	case ProviderCopilot:
+		return decodeCopilot(v, conf, now, payload)
 	}
 	return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
 }
@@ -87,6 +89,8 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		return wireResponse{Stdout: out}, nil
 	case ProviderKimi:
 		return encodeKimi(base, d)
+	case ProviderCopilot:
+		return encodeCopilot(base, d)
 	}
 	return wireResponse{}, fmt.Errorf("agenthooks: unknown provider %q", base.Provider)
 }

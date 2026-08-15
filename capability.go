@@ -79,6 +79,20 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindPermission:      caps(CapAllow, CapDeny), // via HTTP reply (§8)
 		// session.idle cannot continue the agent: empty set on KindStop.
 	},
+	ProviderCopilot: {
+		// preToolUse and permissionRequest are the only decision-capable
+		// events: deny was observed enforced end to end, and it fires even
+		// under --allow-all/--yolo. prompt.submitted is deliberately an empty
+		// set — Copilot DROPS command-hook output for userPromptSubmitted
+		// (modifiedPrompt is SDK-programmatic only), so pretending to block
+		// there would silently allow. Everything else is observation-only.
+		KindToolPre:      caps(CapDeny, CapAsk, CapAllow, CapUpdateInput),
+		KindPermission:   caps(CapDeny, CapAllow),
+		KindStop:         caps(CapContinueAgent),
+		KindSubagentStop: caps(CapContinueAgent),
+		KindSessionStart: caps(CapAddContext),
+		KindNotification: caps(CapAddContext),
+	},
 	ProviderKimi: {
 		// Only UserPromptSubmit, PreToolUse and Stop are blockable; JSON
 		// output understands deny|allow only — no ask, no updatedInput, no

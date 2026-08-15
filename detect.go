@@ -32,6 +32,7 @@ var validProviders = map[Provider]bool{
 	ProviderGemini:     true,
 	ProviderOpenCode:   true,
 	ProviderKimi:       true,
+	ProviderCopilot:    true,
 }
 
 func parseArgs(args []string) (*invocation, error) {
@@ -125,6 +126,11 @@ func detectFromEnv() (Provider, bool) {
 	if os.Getenv("OPENCODE_SERVER") != "" || os.Getenv("OPENCODE") != "" {
 		return ProviderOpenCode, true
 	}
+	// Copilot cross-sets CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR into hook
+	// processes (observed on CLI 1.0.80), so it must be checked before Claude.
+	if os.Getenv("COPILOT_CLI") != "" || os.Getenv("COPILOT_PLUGIN_ROOT") != "" || os.Getenv("COPILOT_PLUGIN_DATA") != "" {
+		return ProviderCopilot, true
+	}
 	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
 	}
@@ -133,12 +139,15 @@ func detectFromEnv() (Provider, bool) {
 
 func detectFromShape(payload []byte) (Provider, bool) {
 	var probe struct {
-		HookEventName  string          `json:"hook_event_name"`
-		ConversationID string          `json:"conversation_id"`
-		TurnID         string          `json:"turn_id"`
-		ToolCallID     string          `json:"tool_call_id"`
-		Timestamp      string          `json:"timestamp"`
+		HookEventName  string `json:"hook_event_name"`
+		ConversationID string `json:"conversation_id"`
+		TurnID         string `json:"turn_id"`
+		ToolCallID     string `json:"tool_call_id"`
+		// Raw, not string: Copilot ships an epoch-ms NUMBER here and a typed
+		// mismatch would fail the whole probe, not just this field.
+		Timestamp      json.RawMessage `json:"timestamp"`
 		SessionID      string          `json:"session_id"`
+		SessionIDCamel string          `json:"sessionId"`
 		Seq            json.RawMessage `json:"seq"`
 		Hook           string          `json:"hook"`
 	}
@@ -148,11 +157,16 @@ func detectFromShape(payload []byte) (Provider, bool) {
 	switch {
 	case probe.Hook != "" && len(probe.Seq) > 0:
 		return ProviderOpenCode, true
+	// Copilot is the only dialect keying the session on camelCase sessionId;
+	// its payloads carry no event-name field at all on most events, so this is
+	// the discriminator (verified against Copilot CLI 1.0.80).
+	case probe.SessionIDCamel != "":
+		return ProviderCopilot, true
 	case probe.ConversationID != "":
 		return ProviderCursor, true
 	case probe.HookEventName != "" && isCamel(probe.HookEventName):
 		return ProviderCursor, true
-	case geminiKinds[probe.HookEventName] != "" && (probe.Timestamp != "" || claudeKinds[probe.HookEventName] == ""):
+	case geminiKinds[probe.HookEventName] != "" && (len(probe.Timestamp) > 0 || claudeKinds[probe.HookEventName] == ""):
 		return ProviderGemini, true
 	case probe.TurnID != "":
 		return ProviderCodex, true
