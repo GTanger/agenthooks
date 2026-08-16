@@ -35,31 +35,22 @@ var copilotKinds = map[string]EventKind{
 	"subagentStop":        KindSubagentStop,
 	"preCompact":          KindCompactPre,
 	"notification":        KindNotification,
-	// userPromptTransformed and errorOccurred have no unified kind; they
-	// arrive as KindOther with the native name intact.
+	// Events with no unified kind (userPromptTransformed, errorOccurred)
+	// arrive as KindOther with the raw payload intact.
 }
 
 // copilotPascalAliases maps the Claude-compatible PascalCase names Copilot
 // stamps into `hook_event_name` back onto the native camelCase vocabulary.
-// PascalCase is an alias into the same pipeline, not a separate one.
+// PascalCase is an alias into the same pipeline, not a separate one. Only
+// notification is observed shipping one (Copilot CLI 1.0.80); add entries as
+// more turn up on the wire.
 var copilotPascalAliases = map[string]string{
-	"SessionStart":       "sessionStart",
-	"SessionEnd":         "sessionEnd",
-	"UserPromptSubmit":   "userPromptSubmitted",
-	"PreToolUse":         "preToolUse",
-	"PostToolUse":        "postToolUse",
-	"PostToolUseFailure": "postToolUseFailure",
-	"PermissionRequest":  "permissionRequest",
-	"Notification":       "notification",
-	"PreCompact":         "preCompact",
-	"Stop":               "agentStop",
-	"SubagentStop":       "subagentStop",
+	"Notification": "notification",
 }
 
 type copilotToolResult struct {
-	ResultType      string          `json:"resultType"`
-	TextResultForLM string          `json:"textResultForLlm"`
-	Result          json.RawMessage `json:"result"`
+	ResultType      string `json:"resultType"`
+	TextResultForLM string `json:"textResultForLlm"`
 }
 
 type copilotIn struct {
@@ -73,11 +64,10 @@ type copilotIn struct {
 	HookName      string `json:"hookName"`
 	HookEventName string `json:"hook_event_name"`
 
-	Source            string `json:"source"`
-	InitialPrompt     string `json:"initialPrompt"`
-	Reason            string `json:"reason"`
-	Prompt            string `json:"prompt"`
-	TransformedPrompt string `json:"transformedPrompt"`
+	Source        string `json:"source"`
+	InitialPrompt string `json:"initialPrompt"`
+	Reason        string `json:"reason"`
+	Prompt        string `json:"prompt"`
 
 	ToolName string `json:"toolName"`
 	// ToolArgs is a JSON-ENCODED STRING on pre/postToolUse; ToolInput is a
@@ -113,8 +103,6 @@ func copilotEventName(in *copilotIn) string {
 		return in.HookEventName
 	}
 	switch {
-	case in.TransformedPrompt != "":
-		return "userPromptTransformed"
 	case in.InitialPrompt != "" || in.Source != "":
 		return "sessionStart"
 	case in.Prompt != "":
@@ -162,18 +150,12 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 		DetectionConfidence: conf,
 		Session: SessionInfo{
 			ID:             in.SessionID,
-			TurnID:         "",
 			CWD:            in.CWD,
 			WorkspaceRoots: rootsFor(in.CWD),
 			TranscriptPath: in.TranscriptPath,
 			Model:          in.Model,
-			PermissionMode: "",
-			UserEmail:      "",
 		},
-		Agent:      nil,
-		Backfilled: false,
-		Raw:        json.RawMessage(payload),
-		Ext:        nil,
+		Raw: json.RawMessage(payload),
 	}
 	if in.AgentID != "" || in.AgentType != "" || in.AgentName != "" {
 		typ := in.AgentType
@@ -183,71 +165,42 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: typ}
 	}
 
-	switch kind {
-	case KindToolPre:
-		return &ToolPreEvent{Event: base, Tool: copilotToolCall(base.Session, &in)}, nil
-	case KindPermission:
-		return &PermissionEvent{Event: base, Tool: copilotToolCall(base.Session, &in)}, nil
-	case KindToolPost, KindToolError:
-		var out json.RawMessage
-		errText := in.Error
-		if in.ToolResult != nil {
-			out = in.ToolResult.Result
-			if len(out) == 0 && in.ToolResult.TextResultForLM != "" {
-				if b, err := json.Marshal(in.ToolResult.TextResultForLM); err == nil {
-					out = b
-				}
-			}
-			if errText == "" && in.ToolResult.ResultType == "error" {
-				errText = in.ToolResult.TextResultForLM
+	// Copilot carries Claude's shapes under renamed keys: project onto claudeIn
+	// and reuse the shared builder. Two normalizations happen here — the two
+	// argument shapes collapse to one (a JSON-encoded string in toolArgs on
+	// pre/postToolUse, a plain object in toolInput on permissionRequest), and
+	// the toolResult block flattens to output + error text. Copilot ships no
+	// tool-call id (so every id is synthesized) and no duration.
+	args := in.ToolArgs
+	if len(args) == 0 {
+		args = in.ToolInput
+	}
+	var output json.RawMessage
+	errText := in.Error
+	if in.ToolResult != nil {
+		if in.ToolResult.TextResultForLM != "" {
+			if b, err := json.Marshal(in.ToolResult.TextResultForLM); err == nil {
+				output = b
 			}
 		}
-		return &ToolPostEvent{
-			Event:      base,
-			Tool:       copilotToolCall(base.Session, &in),
-			Output:     out,
-			Failed:     kind == KindToolError,
-			Error:      errText,
-			DurationMS: nil,
-		}, nil
-	case KindPromptSubmitted:
-		return &PromptEvent{Event: base, Prompt: in.Prompt}, nil
-	case KindStop, KindSubagentStop:
-		loop := 0
-		if in.StopHookActive {
-			loop = 1
+		if errText == "" && in.ToolResult.ResultType == "error" {
+			errText = in.ToolResult.TextResultForLM
 		}
-		return &StopEvent{
-			Event:               base,
-			PreviouslyContinued: in.StopHookActive,
-			LoopCount:           loop,
-			FinalMessage:        in.Response,
-			Usage:               nil,
-		}, nil
-	case KindSubagentStart:
-		return &SubagentStartEvent{Event: base}, nil
-	case KindSessionStart:
-		return &SessionStartEvent{Event: base, Source: in.Source}, nil
-	case KindSessionEnd:
-		return &SessionEndEvent{Event: base, Reason: in.Reason}, nil
-	case KindCompactPre:
-		return &CompactEvent{Event: base, Trigger: in.Reason, Instructions: ""}, nil
-	case KindNotification:
-		return &NotificationEvent{Event: base, Message: in.Message}, nil
 	}
-	ev := base
-	return &ev, nil
-}
-
-// copilotToolCall normalizes the two argument shapes: a JSON-encoded string in
-// toolArgs on pre/postToolUse, a plain object in toolInput on
-// permissionRequest. Copilot ships no tool-call id, so every id is synthesized.
-func copilotToolCall(s SessionInfo, in *copilotIn) ToolCall {
-	raw := in.ToolArgs
-	if len(raw) == 0 {
-		raw = in.ToolInput
+	shaped := claudeIn{
+		ToolName:             in.ToolName,
+		ToolInput:            args,
+		ToolResponse:         output,
+		ToolError:            errText,
+		Prompt:               in.Prompt,
+		Message:              in.Message,
+		LastAssistantMessage: in.Response,
+		Source:               in.Source,
+		Reason:               in.Reason,
+		StopHookActive:       in.StopHookActive,
+		Trigger:              in.Reason,
 	}
-	return makeToolCall(s, in.ToolName, "", raw, raw)
+	return buildClaudeShaped(base, &shaped), nil
 }
 
 // encodeCopilot writes the per-event output schema. It always exits 0: on
@@ -289,7 +242,7 @@ func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 			out["decision"] = "block"
 			out["reason"] = d.instruction
 		}
-	case KindSessionStart, KindNotification:
+	case KindSessionStart:
 		if ctx != "" {
 			out["additionalContext"] = ctx
 		}
@@ -297,7 +250,7 @@ func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 
 	b, err := json.Marshal(out)
 	if err != nil {
-		return wireResponse{Stdout: nil, Stderr: nil, ExitCode: 0}, err
+		return wireResponse{}, err
 	}
-	return wireResponse{Stdout: b, Stderr: nil, ExitCode: 0}, nil
+	return wireResponse{Stdout: b}, nil
 }

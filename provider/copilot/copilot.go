@@ -16,11 +16,16 @@ import (
 	"github.com/speakeasy-api/agenthooks/internal/jsonx"
 )
 
+// Base carries the fields every Copilot hook payload includes.
+type Base struct {
+	SessionID string `json:"sessionId"`
+	Timestamp int64  `json:"timestamp"`
+	CWD       string `json:"cwd"`
+}
+
 // SessionStartInput is the native sessionStart payload.
 type SessionStartInput struct {
-	SessionID     string                     `json:"sessionId"`
-	Timestamp     int64                      `json:"timestamp"`
-	CWD           string                     `json:"cwd"`
+	Base
 	Source        string                     `json:"source"`
 	InitialPrompt string                     `json:"initialPrompt"`
 	Extra         map[string]json.RawMessage `json:"-"`
@@ -28,32 +33,26 @@ type SessionStartInput struct {
 
 // SessionEndInput is the native sessionEnd payload.
 type SessionEndInput struct {
-	SessionID string                     `json:"sessionId"`
-	Timestamp int64                      `json:"timestamp"`
-	CWD       string                     `json:"cwd"`
-	Reason    string                     `json:"reason"`
-	Extra     map[string]json.RawMessage `json:"-"`
+	Base
+	Reason string                     `json:"reason"`
+	Extra  map[string]json.RawMessage `json:"-"`
 }
 
 // UserPromptSubmittedInput is the native userPromptSubmitted payload. Command
 // hooks cannot rewrite the prompt: Copilot drops their output for this event.
 type UserPromptSubmittedInput struct {
-	SessionID string                     `json:"sessionId"`
-	Timestamp int64                      `json:"timestamp"`
-	CWD       string                     `json:"cwd"`
-	Prompt    string                     `json:"prompt"`
-	Extra     map[string]json.RawMessage `json:"-"`
+	Base
+	Prompt string                     `json:"prompt"`
+	Extra  map[string]json.RawMessage `json:"-"`
 }
 
 // PreToolUseInput is the native preToolUse payload. ToolArgs is a JSON-encoded
 // string, and no tool-call id is supplied.
 type PreToolUseInput struct {
-	SessionID string                     `json:"sessionId"`
-	Timestamp int64                      `json:"timestamp"`
-	CWD       string                     `json:"cwd"`
-	ToolName  string                     `json:"toolName"`
-	ToolArgs  string                     `json:"toolArgs"`
-	Extra     map[string]json.RawMessage `json:"-"`
+	Base
+	ToolName string                     `json:"toolName"`
+	ToolArgs string                     `json:"toolArgs"`
+	Extra    map[string]json.RawMessage `json:"-"`
 }
 
 // ToolResult is the tool outcome block on postToolUse.
@@ -64,9 +63,7 @@ type ToolResult struct {
 
 // PostToolUseInput is the native postToolUse payload.
 type PostToolUseInput struct {
-	SessionID  string                     `json:"sessionId"`
-	Timestamp  int64                      `json:"timestamp"`
-	CWD        string                     `json:"cwd"`
+	Base
 	ToolName   string                     `json:"toolName"`
 	ToolArgs   string                     `json:"toolArgs"`
 	ToolResult ToolResult                 `json:"toolResult"`
@@ -76,22 +73,18 @@ type PostToolUseInput struct {
 // PostToolUseFailureInput is the native postToolUseFailure payload: no
 // toolResult block, a bare error string instead.
 type PostToolUseFailureInput struct {
-	SessionID string                     `json:"sessionId"`
-	Timestamp int64                      `json:"timestamp"`
-	CWD       string                     `json:"cwd"`
-	ToolName  string                     `json:"toolName"`
-	ToolArgs  string                     `json:"toolArgs"`
-	Error     string                     `json:"error"`
-	Extra     map[string]json.RawMessage `json:"-"`
+	Base
+	ToolName string                     `json:"toolName"`
+	ToolArgs string                     `json:"toolArgs"`
+	Error    string                     `json:"error"`
+	Extra    map[string]json.RawMessage `json:"-"`
 }
 
 // PermissionRequestInput is the native permissionRequest payload. It is the
 // one event carrying its own name, and its arguments are an object.
 type PermissionRequestInput struct {
-	HookName              string                     `json:"hookName"`
-	SessionID             string                     `json:"sessionId"`
-	Timestamp             int64                      `json:"timestamp"`
-	CWD                   string                     `json:"cwd"`
+	HookName string `json:"hookName"`
+	Base
 	ToolName              string                     `json:"toolName"`
 	ToolInput             json.RawMessage            `json:"toolInput"`
 	PermissionSuggestions json.RawMessage            `json:"permissionSuggestions"`
@@ -100,9 +93,7 @@ type PermissionRequestInput struct {
 
 // AgentStopInput is the native agentStop payload.
 type AgentStopInput struct {
-	SessionID      string                     `json:"sessionId"`
-	Timestamp      int64                      `json:"timestamp"`
-	CWD            string                     `json:"cwd"`
+	Base
 	TranscriptPath string                     `json:"transcriptPath"`
 	StopReason     string                     `json:"stopReason"`
 	StopHookActive bool                       `json:"stop_hook_active"`
@@ -111,9 +102,7 @@ type AgentStopInput struct {
 
 // SubagentStopInput is the native subagentStop payload.
 type SubagentStopInput struct {
-	SessionID        string                     `json:"sessionId"`
-	Timestamp        int64                      `json:"timestamp"`
-	CWD              string                     `json:"cwd"`
+	Base
 	TranscriptPath   string                     `json:"transcriptPath"`
 	AgentID          string                     `json:"agentId"`
 	AgentType        string                     `json:"agentType"`
@@ -126,9 +115,7 @@ type SubagentStopInput struct {
 
 // NotificationInput is the native notification payload.
 type NotificationInput struct {
-	SessionID        string                     `json:"sessionId"`
-	Timestamp        int64                      `json:"timestamp"`
-	CWD              string                     `json:"cwd"`
+	Base
 	Message          string                     `json:"message"`
 	Title            string                     `json:"title"`
 	HookEventName    string                     `json:"hook_event_name"`

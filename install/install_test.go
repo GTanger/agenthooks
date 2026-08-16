@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -398,5 +399,96 @@ func TestRenderOpenCodeShim(t *testing.T) {
 	}
 	if strings.Contains(shim, "server?.headers") || strings.Contains(shim, "server?.environment") {
 		t.Error("shim must not forward MCP credentials")
+	}
+}
+
+// TestRenderCopilotPlugin pins the three things that silently break Copilot
+// telemetry rather than failing loudly:
+//   - a matcher key at all (an empty one is a validation error that discards
+//     this plugin's ENTIRE hook config),
+//   - a second copy of the config at <root>/hooks.json (Copilot parses both
+//     paths, so shipping both double-registers every hook),
+//   - bash/powershell keys (Copilot fills both from command; splitting them
+//     here would render the argv twice with no test on the second copy).
+func TestRenderCopilotPlugin(t *testing.T) {
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plugin map[string]string
+	if err := json.Unmarshal(readRendered(t, fsys, "plugin.json"), &plugin); err != nil {
+		t.Fatal(err)
+	}
+	if plugin["name"] != "myhooks" {
+		t.Errorf("plugin.json must sit at the package root with the manifest name: %v", plugin)
+	}
+	if _, err := fs.ReadFile(fsys, "hooks.json"); err == nil {
+		t.Error("hooks.json at the package root double-registers every hook")
+	}
+
+	raw := readRendered(t, fsys, "hooks/hooks.json")
+	if bytes.Contains(raw, []byte(`"matcher"`)) {
+		t.Errorf("matcher key present; an empty matcher discards the whole hook config:\n%s", raw)
+	}
+	var cfg struct {
+		Version int `json:"version"`
+		Hooks   map[string][]struct {
+			Type       string          `json:"type"`
+			Command    string          `json:"command"`
+			TimeoutSec int             `json:"timeoutSec"`
+			Bash       json.RawMessage `json:"bash"`
+			PowerShell json.RawMessage `json:"powershell"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != 1 {
+		t.Errorf("version = %d, want 1", cfg.Version)
+	}
+	// testManifest declares ToolPre, Stop and ToolPost; each maps to exactly one
+	// native Copilot event, so there is no double-fire to dedupe.
+	if len(cfg.Hooks) != 3 {
+		t.Errorf("hooks = %v, want one entry per declared kind", cfg.Hooks)
+	}
+	pre := cfg.Hooks["preToolUse"]
+	if len(pre) != 1 {
+		t.Fatalf("preToolUse entries = %+v", pre)
+	}
+	if pre[0].Type != "command" || pre[0].TimeoutSec != 30 {
+		t.Errorf("preToolUse entry wrong: %+v", pre[0])
+	}
+	if !strings.Contains(pre[0].Command, "agenthooks run --provider=copilot") {
+		t.Errorf("command wrong: %q", pre[0].Command)
+	}
+	if len(pre[0].Bash) > 0 || len(pre[0].PowerShell) > 0 {
+		t.Error("bash/powershell must be absent; Copilot copies command into both")
+	}
+	for _, event := range []string{"agentStop", "postToolUse"} {
+		if len(cfg.Hooks[event]) != 1 {
+			t.Errorf("%s not registered: %v", event, cfg.Hooks)
+		}
+	}
+}
+
+func TestRenderCopilotScopes(t *testing.T) {
+	// Project scope goes to .github/hooks/, user scope to hooks/hooks.json
+	// under Target.Dir (~/.copilot). Plugin scope has nowhere to put the name.
+	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRendered(t, proj, ".github/hooks/agenthooks.json")
+
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRendered(t, user, "hooks/hooks.json")
+
+	m := testManifest()
+	m.Identity.Name = ""
+	if _, err := Render(m, Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin}); err == nil {
+		t.Error("plugin scope with no Identity.Name must fail, not emit a nameless package")
 	}
 }

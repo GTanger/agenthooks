@@ -8,21 +8,21 @@ import (
 	"github.com/speakeasy-api/agenthooks"
 )
 
-// kindToCopilot expands unified kinds to Copilot hook event lists. Copilot
-// fires exactly one native event per kind, so there is no double-fire to dedupe.
-var kindToCopilot = map[agenthooks.EventKind][]string{
-	agenthooks.KindSessionStart:    {"sessionStart"},
-	agenthooks.KindSessionEnd:      {"sessionEnd"},
-	agenthooks.KindPromptSubmitted: {"userPromptSubmitted"},
-	agenthooks.KindToolPre:         {"preToolUse"},
-	agenthooks.KindToolPost:        {"postToolUse"},
-	agenthooks.KindToolError:       {"postToolUseFailure"},
-	agenthooks.KindPermission:      {"permissionRequest"},
-	agenthooks.KindStop:            {"agentStop"},
-	agenthooks.KindSubagentStart:   {"subagentStart"},
-	agenthooks.KindSubagentStop:    {"subagentStop"},
-	agenthooks.KindCompactPre:      {"preCompact"},
-	agenthooks.KindNotification:    {"notification"},
+// kindToCopilot maps unified kinds to Copilot hook events. Copilot fires
+// exactly one native event per kind, so there is no double-fire to dedupe.
+var kindToCopilot = map[agenthooks.EventKind]string{
+	agenthooks.KindSessionStart:    "sessionStart",
+	agenthooks.KindSessionEnd:      "sessionEnd",
+	agenthooks.KindPromptSubmitted: "userPromptSubmitted",
+	agenthooks.KindToolPre:         "preToolUse",
+	agenthooks.KindToolPost:        "postToolUse",
+	agenthooks.KindToolError:       "postToolUseFailure",
+	agenthooks.KindPermission:      "permissionRequest",
+	agenthooks.KindStop:            "agentStop",
+	agenthooks.KindSubagentStart:   "subagentStart",
+	agenthooks.KindSubagentStop:    "subagentStop",
+	agenthooks.KindCompactPre:      "preCompact",
+	agenthooks.KindNotification:    "notification",
 }
 
 // copilotHookEntry is one command entry. There is deliberately NO matcher
@@ -43,18 +43,15 @@ type copilotHookEntry struct {
 func renderCopilot(m Manifest, t Target) (fs.FS, error) {
 	hooks := map[string][]copilotHookEntry{}
 	for _, spec := range m.Hooks {
-		events, ok := kindToCopilot[spec.Kind]
+		event, ok := kindToCopilot[spec.Kind]
 		if !ok {
 			continue
 		}
-		cmd := hookCommand(m, agenthooks.ProviderCopilot, spec)
-		for _, event := range events {
-			hooks[event] = append(hooks[event], copilotHookEntry{
-				Type:       "command",
-				Command:    cmd,
-				TimeoutSec: timeoutSeconds(spec),
-			})
-		}
+		hooks[event] = append(hooks[event], copilotHookEntry{
+			Type:       "command",
+			Command:    hookCommand(m, agenthooks.ProviderCopilot, spec),
+			TimeoutSec: timeoutSeconds(spec),
+		})
 	}
 	// No failClosed flag: Copilot fixes the posture per event (preToolUse is
 	// fail-closed on any non-timeout error, everything else fails open).

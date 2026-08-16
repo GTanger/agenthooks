@@ -91,7 +91,6 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindStop:         caps(CapContinueAgent),
 		KindSubagentStop: caps(CapContinueAgent),
 		KindSessionStart: caps(CapAddContext),
-		KindNotification: caps(CapAddContext),
 	},
 	ProviderKimi: {
 		// Only UserPromptSubmit, PreToolUse and Stop are blockable; JSON

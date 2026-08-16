@@ -146,7 +146,6 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		// Raw, not string: Copilot ships an epoch-ms NUMBER here and a typed
 		// mismatch would fail the whole probe, not just this field.
 		Timestamp      json.RawMessage `json:"timestamp"`
-		SessionID      string          `json:"session_id"`
 		SessionIDCamel string          `json:"sessionId"`
 		Seq            json.RawMessage `json:"seq"`
 		Hook           string          `json:"hook"`
