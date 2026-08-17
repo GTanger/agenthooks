@@ -994,6 +994,47 @@ func TestResolveMCPCopilotLongestPrefixWins(t *testing.T) {
 	}
 }
 
+// TestResolveMCPCopilotProjectScope pins that Copilot's workspace configs are
+// read and outrank the user-scope file, the way Copilot itself resolves them.
+func TestResolveMCPCopilotProjectScope(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
+		"mcpServers": {
+			"github": {"url": "https://user.example.com/mcp"},
+			"notes":  {"url": "https://notes.example.com/mcp"}
+		}
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".github", "mcp.json"), `{
+		"mcpServers": {"github": {"url": "https://workspace.example.com/mcp"}}
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
+		"mcpServers": {"tracker": {"url": "https://tracker.example.com/mcp"}}
+	}`)
+	r := mcpTestRunner(t)
+
+	// Same name in both scopes: the workspace transport wins.
+	ev := mcpToolPre(ProviderCopilot, cwd, "github-create_issue")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://workspace.example.com/mcp" {
+		t.Errorf("workspace scope must outrank user scope: %+v", ev.Tool.MCP)
+	}
+
+	// .mcp.json is read too.
+	ev = mcpToolPre(ProviderCopilot, cwd, "tracker-list_issues")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" {
+		t.Errorf(".mcp.json server not resolved: %+v", ev.Tool.MCP)
+	}
+
+	// User scope still resolves for names the workspace does not define.
+	ev = mcpToolPre(ProviderCopilot, cwd, "notes-search")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://notes.example.com/mcp" {
+		t.Errorf("user scope must still resolve: %+v", ev.Tool.MCP)
+	}
+}
+
 // TestResolveMCPCopilotHomeOverride verifies COPILOT_HOME relocates the config
 // directory, which is also what lets the e2e suite point Copilot and the
 // resolver at the same temp config.

@@ -154,7 +154,7 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		return "", false
 	}
 	switch {
-	case probe.Hook != "" && len(probe.Seq) > 0:
+	case probe.Hook != "" && jsonPresent(probe.Seq):
 		return ProviderOpenCode, true
 	// Copilot is the only dialect keying the session on camelCase sessionId;
 	// its payloads carry no event-name field at all on most events, so this is
@@ -165,7 +165,9 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		return ProviderCursor, true
 	case probe.HookEventName != "" && isCamel(probe.HookEventName):
 		return ProviderCursor, true
-	case geminiKinds[probe.HookEventName] != "" && (len(probe.Timestamp) > 0 || claudeKinds[probe.HookEventName] == ""):
+	// A JSON null decodes into RawMessage as the 4-byte literal, so presence
+	// is len>0 AND not null — otherwise `"timestamp": null` would read as set.
+	case geminiKinds[probe.HookEventName] != "" && (jsonPresent(probe.Timestamp) || claudeKinds[probe.HookEventName] == ""):
 		return ProviderGemini, true
 	case probe.TurnID != "":
 		return ProviderCodex, true
@@ -187,6 +189,14 @@ var kimiOnlyEvents = map[string]bool{
 	"PermissionResult": true,
 	"StopFailure":      true,
 	"Interrupt":        true,
+}
+
+// jsonPresent reports whether a probe field was set to something other than
+// null. Probe fields are json.RawMessage so a type mismatch cannot fail the
+// whole unmarshal, and that also means an explicit null arrives as a non-empty
+// 4-byte literal rather than as an absent field.
+func jsonPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
 }
 
 func isCamel(s string) bool {

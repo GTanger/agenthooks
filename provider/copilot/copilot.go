@@ -70,14 +70,17 @@ type PostToolUseInput struct {
 	Extra      map[string]json.RawMessage `json:"-"`
 }
 
-// PostToolUseFailureInput is the native postToolUseFailure payload: no
-// toolResult block, a bare error string instead.
+// PostToolUseFailureInput is the native postToolUseFailure payload. The
+// observed shape is a bare error string; ToolResult is here because the codec
+// also treats a toolResult block with resultType "error" as this event, and
+// the view has to be able to surface that text too.
 type PostToolUseFailureInput struct {
 	Base
-	ToolName string                     `json:"toolName"`
-	ToolArgs string                     `json:"toolArgs"`
-	Error    string                     `json:"error"`
-	Extra    map[string]json.RawMessage `json:"-"`
+	ToolName   string                     `json:"toolName"`
+	ToolArgs   string                     `json:"toolArgs"`
+	Error      string                     `json:"error"`
+	ToolResult ToolResult                 `json:"toolResult"`
+	Extra      map[string]json.RawMessage `json:"-"`
 }
 
 // PermissionRequestInput is the native permissionRequest payload. It is the
