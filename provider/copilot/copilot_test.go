@@ -114,3 +114,35 @@ func TestViewsRejectMismatchedEvent(t *testing.T) {
 		t.Error("a view must not decode another provider's event")
 	}
 }
+
+// The package doc promises unknown fields land in Extra, and the `json:"-"` tag
+// means stock encoding/json would never do that — jsonx.Unmarshal does, by
+// diffing the raw object against the struct's known keys. A view that forgets
+// the Extra field, or a key that stops being known, shows up here.
+func TestPreToolUseViewWithExtraCapture(t *testing.T) {
+	raw := `{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{}","brand_new_field":"surprise"}`
+	e := &agenthooks.Event{
+		Provider:   agenthooks.ProviderCopilot,
+		NativeName: "preToolUse",
+		Raw:        json.RawMessage(raw),
+	}
+	v, ok := PreToolUse(e)
+	if !ok {
+		t.Fatal("view should decode")
+	}
+	if v.ToolName != "bash" || v.SessionID != "sess-copilot-1" || v.CWD != "/work/repo" {
+		t.Errorf("fields wrong: %+v", v)
+	}
+	if string(v.Extra["brand_new_field"]) != `"surprise"` {
+		t.Errorf("unknown field must land in Extra, got %v", v.Extra)
+	}
+
+	// Known keys, embedded Base included, must not be mistaken for unknown ones.
+	clean, ok := PreToolUse(event(t, "pre_tool_use.json", "preToolUse"))
+	if !ok {
+		t.Fatal("recorded payload should decode")
+	}
+	if len(clean.Extra) != 0 {
+		t.Errorf("recorded payload has no unknown fields, got Extra=%v", clean.Extra)
+	}
+}

@@ -15,7 +15,11 @@ import (
 //     permissionRequest ships `hookName` and notification ships a PascalCase
 //     `hook_event_name`. The native name is therefore reconstructed from the
 //     payload shape (copilotEventName); the shapes are disjoint, so the
-//     reconstruction is exact for every documented event.
+//     reconstruction is exact for every documented event. The two events
+//     that cannot be driven from a test harness — preCompact and
+//     subagentStart — were read off the CLI's own bundled sources
+//     (app.js, `nativeHookProcessor.event("preCompact", …)` and
+//     `onSubagentStart`) rather than guessed.
 //  2. `preToolUse` command hooks are fail-closed on ANY non-zero exit other
 //     than a timeout: exit 2, a crash, or any other code denies the tool call
 //     even when stdout says allow. So this codec NEVER signals through the
@@ -68,6 +72,12 @@ type copilotIn struct {
 	InitialPrompt string `json:"initialPrompt"`
 	Reason        string `json:"reason"`
 	Prompt        string `json:"prompt"`
+
+	// Trigger and CustomInstructions ride preCompact only. Copilot spells
+	// customInstructions in camelCase where Claude spells it snake_case;
+	// Trigger carries Claude's own vocabulary ("auto" | "manual").
+	Trigger            string `json:"trigger"`
+	CustomInstructions string `json:"customInstructions"`
 
 	ToolName string `json:"toolName"`
 	// ToolArgs is a JSON-ENCODED STRING on pre/postToolUse; ToolInput is a
@@ -125,6 +135,12 @@ func copilotEventName(in *copilotIn) string {
 		return "subagentStart"
 	case in.Message != "" || in.NotificationTyp != "":
 		return "notification"
+	// preCompact is the only event carrying `trigger`, and it carries no
+	// `reason`. This case must still precede sessionEnd: `reason` is the
+	// weakest discriminator in the switch, so anything reaching it that is
+	// not really a session end gets silently mislabelled KindSessionEnd.
+	case in.Trigger != "":
+		return "preCompact"
 	case in.Reason != "":
 		return "sessionEnd"
 	}
@@ -198,7 +214,8 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 		Source:               in.Source,
 		Reason:               in.Reason,
 		StopHookActive:       in.StopHookActive,
-		Trigger:              in.Reason,
+		Trigger:              in.Trigger,
+		CustomInstructions:   in.CustomInstructions,
 	}
 	return buildClaudeShaped(base, &shaped), nil
 }
@@ -209,7 +226,6 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 // credential) into a total tool-call outage.
 func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 	out := map[string]any{}
-	ctx := joinContext(d.context)
 
 	switch base.Kind {
 	case KindToolPre:
@@ -221,8 +237,8 @@ func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 		case DecisionAsk:
 			out["permissionDecision"] = "ask"
 		}
-		if reason := joinNonEmpty(d.reason, ctx); reason != "" && d.kind != DecisionNoDecision {
-			out["permissionDecisionReason"] = reason
+		if d.reason != "" && d.kind != DecisionNoDecision {
+			out["permissionDecisionReason"] = d.reason
 		}
 		if d.hasUpdatedInput {
 			out["modifiedArgs"] = d.updatedInput
@@ -234,8 +250,8 @@ func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 		case DecisionDeny:
 			out["behavior"] = "deny"
 		}
-		if msg := joinNonEmpty(d.reason, ctx); msg != "" && d.kind != DecisionNoDecision {
-			out["message"] = msg
+		if d.reason != "" && d.kind != DecisionNoDecision {
+			out["message"] = d.reason
 		}
 	case KindStop, KindSubagentStop:
 		if d.kind == DecisionContinue {
@@ -243,7 +259,11 @@ func encodeCopilot(base *Event, d decisionCore) (wireResponse, error) {
 			out["reason"] = d.instruction
 		}
 	case KindSessionStart:
-		if ctx != "" {
+		// sessionStart is the ONLY kind with CapAddContext for Copilot, so it
+		// is the only place d.context can survive applyPolicy. The decision
+		// reasons above are deliberately reason-only: folding context into
+		// them would claim a capability the matrix does not grant.
+		if ctx := joinContext(d.context); ctx != "" {
 			out["additionalContext"] = ctx
 		}
 	}

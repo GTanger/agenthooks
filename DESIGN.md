@@ -2,7 +2,7 @@
 
 A Go library for authoring coding-agent hooks once and running them everywhere:
 Claude Code, Cursor (IDE + CLI + cloud), OpenAI Codex, Gemini CLI, OpenCode,
-and Kimi Code.
+Kimi Code, and GitHub Copilot CLI.
 
 The core promise: **one clear interface, zero data-fidelity loss**. The library
 owns the per-provider glue, hacks, and workarounds so consumers don't have to.
@@ -29,6 +29,20 @@ de-facto industry standard.**
 (Kimi Code, added after the initial research, ships another Claude-shaped
 dialect with renamed keys and a narrower response surface — see quirk registry
 entries #21–24.)
+
+(GitHub Copilot CLI, also added later, is a **CLI-only** camelCase dialect with
+per-event output schemas — `permissionDecision`, `behavior`, `decision`,
+`additionalContext` — and one structural oddity no other provider has: most
+payloads do not carry their own event name, so the codec reconstructs it from
+the payload shape. The shapes are disjoint, so the reconstruction is exact.
+Argument shape is split too — `toolArgs` is a JSON-encoded *string* on
+`pre`/`postToolUse`, `toolInput` a plain object on `permissionRequest` — and no
+tool-call id ships at all, so ids are synthesized. `preToolUse` is fail-closed
+on **any** non-zero exit, not just exit 2, so the codec never signals through
+the exit code: it always exits 0 and encodes the verdict on stdout, which stops
+a crashed hook from denying every tool call. `prompt.submitted` gets an empty
+capability set because Copilot discards command-hook output for
+`userPromptSubmitted`.)
 
 Consequence: the unified contract should be **Claude-shaped semantics with
 typed extensions**, not a lowest-common-denominator invention. Three of five
@@ -589,6 +603,13 @@ Per-target rendering encodes the workaround knowledge:
   dialect `mcp_server_tool`.
 - **OpenCode**: writes the self-contained `.opencode/plugin/agenthooks.ts`
   shim pointing at the consumer binary (§8).
+- **Copilot**: `hooks.json` (plugin root `hooks/hooks.json`, or
+  `.github/hooks/agenthooks.json` at project scope) with **no `matcher` field
+  at all** — an empty matcher is a validation error that discards this
+  plugin's entire hook config, while an absent one means match-all. Only
+  `command` is emitted, never `bash`/`powershell`: Copilot copies `command`
+  into both when absent. No `failClosed` knob either — Copilot fixes the
+  posture per event (`preToolUse` fail-closed, everything else fail-open).
 
 Matchers: `ToolMatcher` compiles to the provider dialect where expressible
 (Claude regex/exact-list rules incl. the hyphen/comma version gates, Gemini
