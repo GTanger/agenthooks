@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, and Kimi Code.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, and OpenClaw.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -122,7 +122,7 @@ degradation; stage errors return as errors.
 | Package | Purpose |
 |---|---|
 | `agenthooks` | Envelope, decisions, capability matrix, policy, runtime (`Main`/`Run`), quirk registry |
-| `provider/{claudecode,codex,cursor,gemini,opencode,kimicode}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
+| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,kimicode}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
 | `install` | One Go `Manifest` → correct `hooks.json` / `settings.json` / `config.toml` / plugin scaffolding per provider, workarounds baked in |
 | `transcript` | Best-effort JSONL transcript readers |
 | `agenthookstest` | Fixture corpus, in-process harness, fake-provider spawner |

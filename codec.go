@@ -54,6 +54,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeGemini(v, conf, now, payload)
 	case ProviderOpenCode:
 		return decodeOpenCodeLine(v, conf, now, payload)
+	case ProviderOpenClaw:
+		return decodeOpenClawLine(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
 	}
@@ -77,6 +79,16 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		return encodeGemini(typed, base, d)
 	case ProviderOpenCode:
 		reply, err := encodeOpenCodeReply(typed, base, d)
+		if err != nil {
+			return wireResponse{}, err
+		}
+		out, err := json.Marshal(reply)
+		if err != nil {
+			return wireResponse{}, err
+		}
+		return wireResponse{Stdout: out}, nil
+	case ProviderOpenClaw:
+		reply, err := encodeOpenClawReply(base, d, nil, "")
 		if err != nil {
 			return wireResponse{}, err
 		}

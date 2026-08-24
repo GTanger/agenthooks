@@ -623,6 +623,35 @@ OpenCode has no out-of-process hook protocol, so agenthooks ships two pieces:
 This keeps the promise: consumers write the same `OnToolPre` handler; on
 OpenCode it arrives via the shim with `Raw` = the exact hook input JSON.
 
+### 8.1 OpenClaw bridge
+
+OpenClaw's Gateway is the same in-process-plugin shape (typed `api.on` hooks,
+no spawned-process protocol), so it reuses the serve-mode bridge with its own
+dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#37):
+
+- **A generated native plugin** (`openclaw.plugin.json` + `index.ts`, rendered
+  by the `install` package; installed with `openclaw plugins install <dir>` +
+  Gateway restart) spawns `agenthooks serve --provider=openclaw` and proxies
+  frames `{seq, hook, event, ctx}` → `{seq, output?}`. Unlike OpenCode's
+  mutable-output merge, the reply `output` is returned **verbatim as the hook
+  handler's return value**: `{block, blockReason, requireApproval, params}` on
+  `before_tool_call`, the `{outcome: "block"|"pass"}` gate decision on
+  `before_agent_run`. Gating hooks await the reply under the shim-owned
+  deadline (OpenClaw applies none of its own); everything else is
+  fire-and-forget. The shim splices the cached `llm_output`
+  (finalMessage/usage) into `agent_end`, and sanitizes `gateway_*` contexts,
+  which otherwise carry the full Gateway config including auth secrets.
+- **`provider/openclaw`** in Go: typed views over the frames. The serve loop
+  keeps per-connection state to backfill `workspaceDir`/`model` onto
+  tool-scope frames (only conversation-scope contexts carry them) and to
+  decode the `after_tool_call` of a just-denied call as `tool.error` rather
+  than a successful completion.
+
+Coverage caveat: conversation-scope hooks require
+`plugins.entries.<id>.hooks.allowConversationAccess: true`, and none of the
+tool/llm hooks fire when the Gateway delegates the loop to the Claude Code CLI
+harness (Claude-CLI-OAuth model auth) — see quirks #34/#35.
+
 ---
 
 ## 9. Quirk registry (the glue we hide)

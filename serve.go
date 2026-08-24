@@ -8,17 +8,20 @@ import (
 	"io"
 )
 
-// serve is the long-lived daemon mode behind the OpenCode shim (§8). Frames
-// are processed sequentially, matching OpenCode's per-session hook semantics
-// (open question #1 resolved conservatively). The shim owns the timeout
-// policy OpenCode lacks; the daemon still bounds each handler with the
-// resolved Policy deadline.
+// serve is the long-lived daemon mode behind the in-process-plugin shims
+// (OpenCode §8, OpenClaw). Frames are processed sequentially, matching the
+// providers' per-session hook semantics (open question #1 resolved
+// conservatively). The shim owns the timeout policy the provider lacks; the
+// daemon still bounds each handler with the resolved Policy deadline.
 func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, stdout, stderr io.Writer) int {
 	if inv.provider == "" {
 		inv.provider = ProviderOpenCode
 	}
+	if inv.provider == ProviderOpenClaw {
+		return r.serveOpenClaw(ctx, inv, stdin, stdout)
+	}
 	if inv.provider != ProviderOpenCode {
-		_, _ = fmt.Fprintf(stderr, "agenthooks: serve mode supports --provider=opencode, got %q\n", inv.provider)
+		_, _ = fmt.Fprintf(stderr, "agenthooks: serve mode supports --provider=opencode or --provider=openclaw, got %q\n", inv.provider)
 		return 64
 	}
 
@@ -116,6 +119,73 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 		if encErr != nil {
 			r.logger.Error("agenthooks: encode failed", "hook", fr.Hook, "error", encErr)
 			reply = &opencodeReply{}
+		}
+		reply.Seq = fr.Seq
+		if err := enc.Encode(reply); err != nil {
+			r.logger.Error("agenthooks: writing reply", "error", err)
+			return 1
+		}
+	}
+	if err := sc.Err(); err != nil {
+		r.logger.Error("agenthooks: reading shim stream", "error", err)
+		return 1
+	}
+	return 0
+}
+
+// serveOpenClaw is the NDJSON loop behind the generated OpenClaw shim plugin.
+// It differs from the OpenCode loop in wire semantics only: replies are hook
+// return values rather than mutable-output merges, there is no initialize
+// frame (every frame's ctx carries its own identity), and the per-connection
+// state backfills workspaceDir/model onto tool-scope frames and flips the
+// after_tool_call of a denied call to a failure (quirk #37).
+func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Reader, stdout io.Writer) int {
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxPayloadBytes)
+	enc := json.NewEncoder(stdout)
+	st := newOpenclawServeState()
+
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var fr openclawFrame
+		if err := json.Unmarshal(line, &fr); err != nil {
+			r.logger.Error("agenthooks: bad shim frame", "error", err)
+			continue
+		}
+		lineCopy := make([]byte, len(line))
+		copy(lineCopy, line)
+		typed, err := decodeOpenClawFrame(inv.variant, DetectionConfig, r.now(), &fr, lineCopy, st)
+		if err != nil {
+			r.logger.Error("agenthooks: decode failed", "hook", fr.Hook, "error", err)
+			_ = enc.Encode(openclawReply{Seq: fr.Seq})
+			continue
+		}
+		base := eventOf(typed)
+		pol := r.policy(base)
+		deadline := pol.Timeout
+		if deadline == 0 {
+			deadline = defaultDeadline
+		}
+		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+		core, herr := r.dispatch(hctx, typed)
+		cancel()
+		if herr != nil {
+			r.logger.Error("agenthooks: handler failed", "hook", fr.Hook, "error", herr)
+			core = failCore(pol, base)
+		}
+		core = r.applyPolicy(typed, base, core, pol)
+
+		toolCallID := ""
+		if tool := toolOf(typed); tool != nil && !tool.Synthesized {
+			toolCallID = tool.ID
+		}
+		reply, encErr := encodeOpenClawReply(base, core, st, toolCallID)
+		if encErr != nil {
+			r.logger.Error("agenthooks: encode failed", "hook", fr.Hook, "error", encErr)
+			reply = &openclawReply{}
 		}
 		reply.Seq = fr.Seq
 		if err := enc.Encode(reply); err != nil {
