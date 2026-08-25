@@ -185,6 +185,9 @@ func decodeOpenClawFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 				delete(st.blockedCalls, in.ToolCallID)
 			}
 		}
+		if errMsg != "" {
+			base.Kind = KindToolError
+		}
 		return &ToolPostEvent{
 			Event:      base,
 			Tool:       makeToolCall(base.Session, in.ToolName, in.ToolCallID, in.Params, in.Params),

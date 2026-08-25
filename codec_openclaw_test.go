@@ -1,6 +1,8 @@
 package agenthooks
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -79,8 +81,13 @@ func TestDecodeOpenClawPromptAndStop(t *testing.T) {
 	if st.Kind != KindStop || st.FinalMessage != "Here is the ls output." {
 		t.Errorf("stop wrong: %+v", st)
 	}
-	if st.Usage == nil || *st.Usage.OutputTokens != 137 || *st.Usage.CacheReadTokens != 68543 {
-		t.Errorf("usage wrong: %+v", st.Usage)
+	switch {
+	case st.Usage == nil:
+		t.Error("usage missing")
+	case st.Usage.OutputTokens == nil || *st.Usage.OutputTokens != 137:
+		t.Errorf("output tokens wrong: %+v", st.Usage.OutputTokens)
+	case st.Usage.CacheReadTokens == nil || *st.Usage.CacheReadTokens != 68543:
+		t.Errorf("cache read tokens wrong: %+v", st.Usage.CacheReadTokens)
 	}
 }
 
@@ -172,7 +179,7 @@ func TestOpenClawBlockedCallFlipsAfterToolCall(t *testing.T) {
 	st := newOpenclawServeState()
 	st.blockedCalls["toolu_01ABC"] = "no exec here"
 	var fr openclawFrame
-	raw := fixture(t, "openclaw/after_tool_call.json")
+	raw := fixture(t, "openclaw/after_tool_call_blocked.json")
 	if err := json.Unmarshal(raw, &fr); err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +191,42 @@ func TestOpenClawBlockedCallFlipsAfterToolCall(t *testing.T) {
 	if !ev.Failed || !strings.Contains(ev.Error, "no exec here") {
 		t.Errorf("blocked after_tool_call must decode as failed: failed=%v error=%q", ev.Failed, ev.Error)
 	}
+	if ev.Kind != KindToolError {
+		t.Errorf("blocked sibling must carry Kind tool.error, got %s", ev.Kind)
+	}
 	if len(st.blockedCalls) != 0 {
 		t.Errorf("blocked marker should be consumed: %+v", st.blockedCalls)
+	}
+}
+
+func TestOpenClawGateTimeoutNoticeMarksCallBlocked(t *testing.T) {
+	// A shim that fail-closed locally reports the call via a gate_timeout
+	// frame; the serve loop must then decode the after_tool_call sibling as
+	// blocked even though no deny decision was ever produced here.
+	r := quietRunner()
+	var kinds []EventKind
+	var errs []string
+	r.OnToolError(func(ctx context.Context, e *ToolPostEvent) (ToolPostDecision, error) {
+		kinds = append(kinds, e.Kind)
+		errs = append(errs, e.Error)
+		return ToolPostDecision{}, nil
+	})
+	lines := []string{
+		`{"seq":1,"hook":"gate_timeout","event":{"toolCallId":"toolu_01ABC","reason":"agenthooks: hook timed out (fail-closed)"}}`,
+		strings.TrimSpace(string(fixture(t, "openclaw/after_tool_call_blocked.json"))),
+	}
+	var out, errb bytes.Buffer
+	code := r.Run(context.Background(), []string{"agenthooks", "serve", "--provider=openclaw"},
+		strings.NewReader(strings.Join(lines, "\n")+"\n"), &out, &errb)
+	if code != 0 {
+		t.Fatalf("serve exit %d, stderr: %s", code, errb.String())
+	}
+	replies := parseReplies(t, out.String())
+	if len(replies) != 2 || replies[0].Seq != 1 {
+		t.Fatalf("gate_timeout must be acknowledged: %+v", replies)
+	}
+	if len(kinds) != 1 || kinds[0] != KindToolError || !strings.Contains(errs[0], "timed out") {
+		t.Fatalf("after_tool_call of a shim-blocked call must dispatch as tool.error: kinds=%v errs=%v", kinds, errs)
 	}
 }
 

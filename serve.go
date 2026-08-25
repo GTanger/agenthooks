@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
+	"time"
 )
 
 // serve is the long-lived daemon mode behind the in-process-plugin shims
@@ -139,11 +141,47 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 // frame (every frame's ctx carries its own identity), and the per-connection
 // state backfills workspaceDir/model onto tool-scope frames and flips the
 // after_tool_call of a denied call to a failure (quirk #37).
+//
+// Gating frames (tool.pre, prompt.submitted) dispatch inline so their reply
+// carries the decision; every other frame is acknowledged immediately and
+// dispatched on a single background worker, so a slow telemetry handler
+// cannot delay a queued gate. Observe frames keep their relative order on the
+// worker; a gate may run before an earlier observe handler finishes.
 func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Reader, stdout io.Writer) int {
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 0, 64<<10), maxPayloadBytes)
 	enc := json.NewEncoder(stdout)
 	st := newOpenclawServeState()
+
+	deadlineFor := func(pol Policy) time.Duration {
+		if pol.Timeout > 0 {
+			return pol.Timeout
+		}
+		// The shim renders --timeout from its gate deadline; without it a
+		// handler could keep burning long after the shim gave up.
+		if inv.timeout > 0 {
+			return inv.timeout * 9 / 10
+		}
+		return defaultDeadline
+	}
+
+	observe := make(chan any, 256)
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for typed := range observe {
+			base := eventOf(typed)
+			pol := r.policy(base)
+			hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol))
+			if _, err := r.dispatch(hctx, typed); err != nil {
+				r.logger.Error("agenthooks: handler failed", "hook", base.NativeName, "error", err)
+			}
+			cancel()
+		}
+	}()
+	defer workers.Wait()
+	defer close(observe)
 
 	for sc.Scan() {
 		line := sc.Bytes()
@@ -155,6 +193,25 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 			r.logger.Error("agenthooks: bad shim frame", "error", err)
 			continue
 		}
+		// The shim reports a gate it had to fail-close locally (consumer
+		// unreachable or over deadline) so the denied call's after_tool_call
+		// still decodes as blocked (quirks #36, #37).
+		if fr.Hook == "gate_timeout" {
+			var in struct {
+				ToolCallID string `json:"toolCallId"`
+				Reason     string `json:"reason"`
+			}
+			_ = json.Unmarshal(fr.Event, &in)
+			if in.ToolCallID != "" {
+				reason := in.Reason
+				if reason == "" {
+					reason = "agenthooks: hook timed out (fail-closed)"
+				}
+				st.blockedCalls[in.ToolCallID] = reason
+			}
+			_ = enc.Encode(openclawReply{Seq: fr.Seq})
+			continue
+		}
 		lineCopy := make([]byte, len(line))
 		copy(lineCopy, line)
 		typed, err := decodeOpenClawFrame(inv.variant, DetectionConfig, r.now(), &fr, lineCopy, st)
@@ -164,12 +221,18 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 			continue
 		}
 		base := eventOf(typed)
-		pol := r.policy(base)
-		deadline := pol.Timeout
-		if deadline == 0 {
-			deadline = defaultDeadline
+
+		if base.Kind != KindToolPre && base.Kind != KindPromptSubmitted {
+			if err := enc.Encode(openclawReply{Seq: fr.Seq}); err != nil {
+				r.logger.Error("agenthooks: writing reply", "error", err)
+				return 1
+			}
+			observe <- typed
+			continue
 		}
-		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+
+		pol := r.policy(base)
+		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol))
 		core, herr := r.dispatch(hctx, typed)
 		cancel()
 		if herr != nil {

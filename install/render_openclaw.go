@@ -9,14 +9,16 @@ import (
 	"github.com/speakeasy-api/agenthooks"
 )
 
-// openclawHooksFor maps subscribed unified kinds to OpenClaw typed plugin
+// openclawKindHooks maps subscribed unified kinds to OpenClaw typed plugin
 // hook names. KindStop also subscribes llm_output: agent_end carries no final
 // message or usage, so the shim caches the turn's llm_output and splices
 // finalMessage/usage into the agent_end frame (mirroring the OpenCode
-// session.idle splice).
+// session.idle splice). KindToolError rides after_tool_call too — failed and
+// blocked calls arrive on the same native hook (quirk #37).
 var openclawKindHooks = map[agenthooks.EventKind][]string{
 	agenthooks.KindToolPre:         {"before_tool_call"},
 	agenthooks.KindToolPost:        {"after_tool_call"},
+	agenthooks.KindToolError:       {"after_tool_call"},
 	agenthooks.KindPromptSubmitted: {"before_agent_run"},
 	agenthooks.KindSessionStart:    {"session_start"},
 	agenthooks.KindSessionEnd:      {"session_end"},
@@ -29,13 +31,22 @@ var openclawKindHooks = map[agenthooks.EventKind][]string{
 	agenthooks.KindCompactPost:     {"after_compaction"},
 }
 
+// openclawGateHooks are the hooks whose replies gate the agent; each carries
+// its own shim-owned deadline from the manifest's blocking spec.
+var openclawGateHooks = map[agenthooks.EventKind]string{
+	agenthooks.KindToolPre:         "before_tool_call",
+	agenthooks.KindPromptSubmitted: "before_agent_run",
+}
+
+const openclawDefaultGateTimeout = 10 * time.Second
+
 // renderOpenClaw writes a native OpenClaw plugin (openclaw.plugin.json +
-// package.json + index.js) that proxies typed api.on hooks to the consumer binary over
-// NDJSON stdio (agenthooks serve --provider=openclaw). Install the rendered
-// directory with `openclaw plugins install <dir>` and restart the Gateway.
-// Conversation-scope hooks (before_agent_run, llm_*, agent_end) additionally
-// require plugins.entries.<id>.hooks.allowConversationAccess: true in the
-// OpenClaw config (quirk #35).
+// package.json + index.js) that proxies typed api.on hooks to the consumer
+// binary over NDJSON stdio (agenthooks serve --provider=openclaw). Install the
+// rendered directory with `openclaw plugins install <dir>` and restart the
+// Gateway. Conversation-scope hooks (before_agent_run, llm_*, agent_end)
+// additionally require plugins.entries.<id>.hooks.allowConversationAccess:
+// true in the OpenClaw config (quirk #35).
 func renderOpenClaw(m Manifest, _ Target) (fs.FS, error) {
 	cmd, err := json.Marshal(m.Command)
 	if err != nil {
@@ -44,27 +55,51 @@ func renderOpenClaw(m Manifest, _ Target) (fs.FS, error) {
 
 	seen := map[string]bool{}
 	var hooks []string
-	for _, spec := range m.Hooks {
-		for _, h := range openclawKindHooks[spec.Kind] {
-			if !seen[h] {
-				seen[h] = true
-				hooks = append(hooks, h)
-			}
+	subscribe := func(h string) {
+		if !seen[h] {
+			seen[h] = true
+			hooks = append(hooks, h)
 		}
 	}
+	for _, spec := range m.Hooks {
+		for _, h := range openclawKindHooks[spec.Kind] {
+			subscribe(h)
+		}
+	}
+	// Always observe gateway lifecycle: it carries the daemon shutdown signal,
+	// and forwarding it sanitized (the raw ctx includes the full Gateway
+	// config with auth secrets) keeps the fidelity channel honest.
+	subscribe("gateway_start")
+	subscribe("gateway_stop")
 	hooksJSON, err := json.Marshal(hooks)
 	if err != nil {
 		return nil, err
 	}
 
-	// The shim owns the gate deadline: OpenClaw applies no default timeout to
+	// The shim owns the gate deadlines: OpenClaw applies no default timeout to
 	// typed hook handlers (quirk #36), so an unbounded consumer would stall
-	// the agent turn indefinitely.
-	gateTimeout := 10 * time.Second
+	// the agent turn indefinitely. Each gate keeps its own manifest timeout.
+	gateTimeouts := map[string]int64{}
+	maxGate := openclawDefaultGateTimeout
 	for _, spec := range m.Hooks {
-		if spec.Blocking && spec.Timeout > gateTimeout {
-			gateTimeout = spec.Timeout
+		hook, ok := openclawGateHooks[spec.Kind]
+		if !ok || !spec.Blocking {
+			continue
 		}
+		t := spec.Timeout
+		if t <= 0 {
+			t = openclawDefaultGateTimeout
+		}
+		if prev, ok := gateTimeouts[hook]; !ok || t.Milliseconds() > prev {
+			gateTimeouts[hook] = t.Milliseconds()
+		}
+		if t > maxGate {
+			maxGate = t
+		}
+	}
+	gateTimeoutsJSON, err := json.Marshal(gateTimeouts)
+	if err != nil {
+		return nil, err
 	}
 
 	id := m.Identity.Name
@@ -117,7 +152,8 @@ func renderOpenClaw(m Manifest, _ Target) (fs.FS, error) {
 	}
 
 	shim := fmt.Sprintf(openClawShimTemplate,
-		string(cmd), string(hooksJSON), gateTimeout.Milliseconds(),
+		string(cmd), maxGate.String(), string(hooksJSON), string(gateTimeoutsJSON),
+		openclawDefaultGateTimeout.Milliseconds(),
 		m.Fail == agenthooks.FailClosed,
 		jsString(id), jsString(name), jsString(desc))
 	return memFS(map[string][]byte{
@@ -143,19 +179,21 @@ import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
 
 const COMMAND = %s
+const SERVE_ARGS = ["agenthooks", "serve", "--provider=openclaw", "--timeout=%s"]
 const HOOKS = %s
-const GATE_TIMEOUT_MS = %d
+// Gating hooks await the reply under a per-hook shim-owned deadline (OpenClaw
+// itself applies none); every other hook is fire-and-forget so telemetry
+// never stalls the agent turn.
+const GATE_TIMEOUT_MS = %s
+const DEFAULT_TIMEOUT_MS = %d
 const FAIL_CLOSED = %t
-// Gating hooks await the reply inside the shim-owned deadline; every other
-// hook is fire-and-forget so telemetry never stalls the agent turn.
-const GATE_HOOKS = new Set(["before_tool_call", "before_agent_run"])
 
 export default {
   id: %s,
   name: %s,
   description: %s,
   register(api) {
-    const child = spawn(COMMAND[0], [...COMMAND.slice(1), "agenthooks", "serve", "--provider=openclaw"], {
+    const child = spawn(COMMAND[0], [...COMMAND.slice(1), ...SERVE_ARGS], {
       stdio: ["pipe", "pipe", "inherit"],
     })
     let seq = 0
@@ -178,19 +216,23 @@ export default {
       resolve(reply)
     })
     child.on("exit", () => {
-      for (const [, resolve] of pending) resolve({})
+      // An exited consumer cannot evaluate gates: resolve as timed out so
+      // FAIL_CLOSED applies instead of silently allowing.
+      for (const [, resolve] of pending) resolve({ timedOut: true })
       pending.clear()
     })
 
-    const call = (hook, event, ctx) => {
-      if (child.exitCode !== null || !child.stdin?.writable) return Promise.resolve({})
+    const call = (hook, event, ctx, timeoutMs) => {
+      if (child.exitCode !== null || !child.stdin?.writable) {
+        return Promise.resolve({ timedOut: true })
+      }
       const id = ++seq
       child.stdin.write(JSON.stringify({ seq: id, hook, event, ctx }) + "\n")
       return new Promise((resolve) => {
         pending.set(id, resolve)
         const timer = setTimeout(() => {
           if (pending.delete(id)) resolve({ timedOut: true })
-        }, GATE_TIMEOUT_MS)
+        }, timeoutMs ?? DEFAULT_TIMEOUT_MS)
         if (typeof timer.unref === "function") timer.unref()
       })
     }
@@ -202,7 +244,21 @@ export default {
       return { port: ctx?.port, workspaceDir: ctx?.workspaceDir }
     }
 
+    const failClosedResult = (hook, event) => {
+      const reason = "agenthooks: hook timed out (fail-closed)"
+      if (hook === "before_agent_run") {
+        return { outcome: "block", reason }
+      }
+      // Tell the daemon this call was blocked locally so its after_tool_call
+      // sibling still decodes as blocked rather than a successful completion.
+      if (event?.toolCallId) {
+        void call("gate_timeout", { toolCallId: event.toolCallId, reason }, null)
+      }
+      return { block: true, blockReason: reason }
+    }
+
     for (const hook of HOOKS) {
+      const gateTimeoutMs = GATE_TIMEOUT_MS[hook]
       api.on(hook, (event, ctx) => {
         if (hook === "llm_output") {
           const texts = Array.isArray(event?.assistantTexts) ? event.assistantTexts : []
@@ -218,17 +274,12 @@ export default {
           void call(hook, spliced, sanitizeCtx(hook, ctx))
           return
         }
-        if (!GATE_HOOKS.has(hook)) {
+        if (gateTimeoutMs === undefined) {
           void call(hook, event, sanitizeCtx(hook, ctx))
           return
         }
-        return call(hook, event, sanitizeCtx(hook, ctx)).then((reply) => {
-          if (reply?.timedOut && FAIL_CLOSED) {
-            if (hook === "before_agent_run") {
-              return { outcome: "block", reason: "agenthooks: hook timed out (fail-closed)" }
-            }
-            return { block: true, blockReason: "agenthooks: hook timed out (fail-closed)" }
-          }
+        return call(hook, event, sanitizeCtx(hook, ctx), gateTimeoutMs).then((reply) => {
+          if (reply?.timedOut && FAIL_CLOSED) return failClosedResult(hook, event)
           return reply?.output
         })
       })

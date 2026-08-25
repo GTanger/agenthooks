@@ -629,18 +629,25 @@ OpenClaw's Gateway is the same in-process-plugin shape (typed `api.on` hooks,
 no spawned-process protocol), so it reuses the serve-mode bridge with its own
 dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#37):
 
-- **A generated native plugin** (`openclaw.plugin.json` + `index.ts`, rendered
-  by the `install` package; installed with `openclaw plugins install <dir>` +
-  Gateway restart) spawns `agenthooks serve --provider=openclaw` and proxies
-  frames `{seq, hook, event, ctx}` → `{seq, output?}`. Unlike OpenCode's
+- **A generated native plugin** (`openclaw.plugin.json` + `package.json` +
+  plain-JS `index.js` — package installs reject TypeScript entries, and
+  `package.json`'s `openclaw.extensions` is what plugin detection keys on;
+  installed with `openclaw plugins install <dir>` + Gateway restart) spawns
+  `agenthooks serve --provider=openclaw` and proxies frames
+  `{seq, hook, event, ctx}` → `{seq, output?}`. Unlike OpenCode's
   mutable-output merge, the reply `output` is returned **verbatim as the hook
   handler's return value**: `{block, blockReason, requireApproval, params}` on
-  `before_tool_call`, the `{outcome: "block"|"pass"}` gate decision on
-  `before_agent_run`. Gating hooks await the reply under the shim-owned
-  deadline (OpenClaw applies none of its own); everything else is
-  fire-and-forget. The shim splices the cached `llm_output`
-  (finalMessage/usage) into `agent_end`, and sanitizes `gateway_*` contexts,
-  which otherwise carry the full Gateway config including auth secrets.
+  `before_tool_call`, `{outcome: "block"}` on a blocked `before_agent_run`
+  (an allowed prompt returns no output — omitting the result IS the pass).
+  Gating hooks await the reply under per-hook shim-owned deadlines (OpenClaw
+  applies none of its own); an unreachable consumer resolves gates as timed
+  out so `Manifest.Fail` applies, and a fail-closed local block is reported
+  to the daemon (`gate_timeout` frame) so the denied call's `after_tool_call`
+  still decodes as blocked. Everything else is fire-and-forget. The shim
+  splices the cached `llm_output` (finalMessage/usage) into `agent_end`, and
+  always subscribes `gateway_start`/`gateway_stop` with a sanitized context,
+  because the raw one carries the full Gateway config including auth
+  secrets.
 - **`provider/openclaw`** in Go: typed views over the frames. The serve loop
   keeps per-connection state to backfill `workspaceDir`/`model` onto
   tool-scope frames (only conversation-scope contexts carry them) and to
@@ -659,6 +666,10 @@ harness (Claude-CLI-OAuth model auth) — see quirks #34/#35.
 Machine-readable registry (`quirks.go` + generated docs), each entry:
 provider, version range, affected event/capability, behavior, mitigation,
 upstream reference. Seeded from provider research and production observation:
+
+The table below is the initially seeded set; `quirks.go` is the authoritative
+registry and has grown past it (entries #21+, including the OpenClaw rows
+#34–#37).
 
 | # | Quirk | Mitigation |
 |---|---|---|

@@ -92,6 +92,11 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		if err != nil {
 			return wireResponse{}, err
 		}
+		// Run mode handles one frame per invocation; carry its seq so the
+		// caller can still correlate the reply.
+		if seq := rawField(base.Raw, "seq"); len(seq) > 0 {
+			_ = json.Unmarshal(seq, &reply.Seq)
+		}
 		out, err := json.Marshal(reply)
 		if err != nil {
 			return wireResponse{}, err
