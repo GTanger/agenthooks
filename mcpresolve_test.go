@@ -144,6 +144,7 @@ func isolateHome(t *testing.T) string {
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads this on windows
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(home, ".kimi-code"))
+	t.Setenv("COPILOT_HOME", filepath.Join(home, ".copilot"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("PATH", filepath.Join(home, "bin-empty"))
 	// Claude launch context is recovered from CLAUDE_PID, so a suite run from
@@ -908,6 +909,146 @@ func TestResolveMCPOpenCodeDetection(t *testing.T) {
 	r.resolveMCP(ev)
 	if ev.Tool.MCP != nil || ev.Tool.Canonical != ToolShell {
 		t.Errorf("native opencode tool must stay native: %+v", ev.Tool)
+	}
+}
+
+func TestResolveMCPCopilotDetection(t *testing.T) {
+	home := isolateHome(t)
+	// Copilot names MCP tools <server>-<tool> verbatim with no reserved
+	// prefix (GitHub Copilot CLI 1.0.80), so — as with OpenCode — the config
+	// match performs detection as well as transport attach.
+	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
+		"mcpServers": {
+			"github":  {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+			"tracker": {"url": "https://tracker.example.com/mcp"}
+		}
+	}`)
+	r := mcpTestRunner(t)
+
+	ev := mcpToolPre(ProviderCopilot, "", "github-create_issue")
+	if ev.Tool.MCP != nil || ev.Tool.Canonical == ToolMCP {
+		t.Fatalf("precondition: codec must not classify copilot MCP names: %+v", ev.Tool)
+	}
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.Canonical != ToolMCP {
+		t.Fatalf("copilot MCP call not detected: %+v", ev.Tool)
+	}
+	if ev.Tool.MCP.Server != "github" || ev.Tool.MCP.Tool != "create_issue" ||
+		ev.Tool.MCP.Command != "npx -y @modelcontextprotocol/server-github" || !ev.Tool.MCP.FromConfig {
+		t.Errorf("copilot identity/transport wrong: %+v", ev.Tool.MCP)
+	}
+
+	ev = mcpToolPre(ProviderCopilot, "", "tracker-list_issues")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" || ev.Tool.MCP.Tool != "list_issues" {
+		t.Errorf("copilot remote server wrong: %+v", ev.Tool.MCP)
+	}
+
+	// Hyphenated native tool with no matching server: stays native. This is
+	// the boundary that keeps the "-" separator usable at all.
+	ev = mcpToolPre(ProviderCopilot, "", "read-file")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP != nil {
+		t.Errorf("unconfigured hyphenated native tool must not detect: %+v", ev.Tool.MCP)
+	}
+
+	ev = mcpToolPre(ProviderCopilot, "", "shell")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP != nil || ev.Tool.Canonical != ToolShell {
+		t.Errorf("native copilot tool must stay native: %+v", ev.Tool)
+	}
+}
+
+// TestResolveMCPCopilotHyphenCollision pins the known false positive: with a
+// server named "read" configured, a native "read-file" is indistinguishable
+// from an MCP call by name alone and resolves as MCP. Copilot supplies no
+// marker to break the tie, so this is accepted rather than fixed — the test
+// exists so the behaviour changes deliberately, not by accident.
+func TestResolveMCPCopilotHyphenCollision(t *testing.T) {
+	home := isolateHome(t)
+	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
+		"mcpServers": {"read": {"url": "https://read.example.com/mcp"}}
+	}`)
+	ev := mcpToolPre(ProviderCopilot, "", "read-file")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "read" || ev.Tool.MCP.Tool != "file" {
+		t.Errorf("expected the documented hyphen collision, got: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestResolveMCPCopilotLongestPrefixWins(t *testing.T) {
+	home := isolateHome(t)
+	// Both the server name and the tool name may contain "-", so the split is
+	// ambiguous; configured names match longest-first.
+	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
+		"mcpServers": {
+			"a":   {"url": "https://short.example.com"},
+			"a-b": {"url": "https://long.example.com"}
+		}
+	}`)
+	ev := mcpToolPre(ProviderCopilot, "", "a-b-do")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "a-b" || ev.Tool.MCP.Tool != "do" ||
+		ev.Tool.MCP.URL != "https://long.example.com" {
+		t.Errorf("longest-prefix match wrong: %+v", ev.Tool.MCP)
+	}
+}
+
+// TestResolveMCPCopilotProjectScope pins that Copilot's workspace configs are
+// read and outrank the user-scope file, the way Copilot itself resolves them.
+func TestResolveMCPCopilotProjectScope(t *testing.T) {
+	home := isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
+		"mcpServers": {
+			"github": {"url": "https://user.example.com/mcp"},
+			"notes":  {"url": "https://notes.example.com/mcp"}
+		}
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".github", "mcp.json"), `{
+		"mcpServers": {"github": {"url": "https://workspace.example.com/mcp"}}
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
+		"mcpServers": {"tracker": {"url": "https://tracker.example.com/mcp"}}
+	}`)
+	r := mcpTestRunner(t)
+
+	// Same name in both scopes: the workspace transport wins.
+	ev := mcpToolPre(ProviderCopilot, cwd, "github-create_issue")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://workspace.example.com/mcp" {
+		t.Errorf("workspace scope must outrank user scope: %+v", ev.Tool.MCP)
+	}
+
+	// .mcp.json is read too.
+	ev = mcpToolPre(ProviderCopilot, cwd, "tracker-list_issues")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" {
+		t.Errorf(".mcp.json server not resolved: %+v", ev.Tool.MCP)
+	}
+
+	// User scope still resolves for names the workspace does not define.
+	ev = mcpToolPre(ProviderCopilot, cwd, "notes-search")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://notes.example.com/mcp" {
+		t.Errorf("user scope must still resolve: %+v", ev.Tool.MCP)
+	}
+}
+
+// TestResolveMCPCopilotHomeOverride verifies COPILOT_HOME relocates the config
+// directory, which is also what lets the e2e suite point Copilot and the
+// resolver at the same temp config.
+func TestResolveMCPCopilotHomeOverride(t *testing.T) {
+	isolateHome(t)
+	dir := t.TempDir()
+	t.Setenv("COPILOT_HOME", dir)
+	writeConfig(t, filepath.Join(dir, "mcp-config.json"), `{
+		"mcpServers": {"notes": {"url": "https://notes.example.com/mcp"}}
+	}`)
+	ev := mcpToolPre(ProviderCopilot, "", "notes-search")
+	mcpTestRunner(t).resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://notes.example.com/mcp" {
+		t.Errorf("COPILOT_HOME override not honoured: %+v", ev.Tool.MCP)
 	}
 }
 
