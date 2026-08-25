@@ -86,6 +86,12 @@ func TestRenderOpenClawPlugin(t *testing.T) {
 	if !strings.Contains(shim, `call("gate_timeout", { toolCallId: event.toolCallId, reason }, null)`) {
 		t.Error("fail-closed tool gate must report the local block to the daemon")
 	}
+	if !strings.Contains(shim, "(reply?.timedOut || reply?.error) && FAIL_CLOSED") {
+		t.Error("a daemon-reported error must fail closed like a timeout")
+	}
+	if !strings.Contains(shim, `llmByRun.delete(ctx?.sessionId ?? "")`) {
+		t.Error("agent_end must consume the sessionId-keyed llm_output fallback entry")
+	}
 
 	// Gateway hooks hand plugins the full config incl. auth secrets; the shim
 	// must forward only the allowlisted fields, and route every forwarded ctx
