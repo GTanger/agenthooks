@@ -88,10 +88,7 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		}
 		return wireResponse{Stdout: out}, nil
 	case ProviderOpenClaw:
-		reply, err := encodeOpenClawReply(base, d, nil, "")
-		if err != nil {
-			return wireResponse{}, err
-		}
+		reply := encodeOpenClawReply(base, d, nil, "")
 		// Run mode handles one frame per invocation; carry its seq so the
 		// caller can still correlate the reply.
 		if seq := rawField(base.Raw, "seq"); len(seq) > 0 {

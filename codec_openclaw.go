@@ -282,8 +282,9 @@ func decodeOpenClawFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 // encodeOpenClawReply builds the shim response frame (seq is filled by the
 // serve loop). Output is the hook handler's return value: before_tool_call
 // understands {block, blockReason, requireApproval, params}; before_agent_run
-// understands the gate decision {outcome, reason, message}.
-func encodeOpenClawReply(base *Event, d decisionCore, st *openclawServeState, toolCallID string) (*openclawReply, error) {
+// understands the gate decision {outcome, reason, message}. Every decision
+// the capability matrix admits is expressible, so encoding cannot fail.
+func encodeOpenClawReply(base *Event, d decisionCore, st *openclawServeState, toolCallID string) *openclawReply {
 	reply := &openclawReply{}
 	set := func(k string, v any) {
 		if reply.Output == nil {
@@ -334,7 +335,7 @@ func encodeOpenClawReply(base *Event, d decisionCore, st *openclawServeState, to
 			set("message", reason)
 		}
 	}
-	return reply, nil
+	return reply
 }
 
 func firstLine(s string) string {

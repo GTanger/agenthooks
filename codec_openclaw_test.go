@@ -134,10 +134,7 @@ func TestDecodeOpenClawModelResponse(t *testing.T) {
 func TestEncodeOpenClawDeny(t *testing.T) {
 	base := &Event{Provider: ProviderOpenClaw, Kind: KindToolPre}
 	st := newOpenclawServeState()
-	reply, err := encodeOpenClawReply(base, decisionCore{kind: DecisionDeny, reason: "no"}, st, "toolu_01ABC")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reply := encodeOpenClawReply(base, decisionCore{kind: DecisionDeny, reason: "no"}, st, "toolu_01ABC")
 	if reply.Output["block"] != true || reply.Output["blockReason"] != "no" {
 		t.Errorf("deny reply wrong: %+v", reply.Output)
 	}
@@ -148,13 +145,10 @@ func TestEncodeOpenClawDeny(t *testing.T) {
 
 func TestEncodeOpenClawAskAndUpdate(t *testing.T) {
 	base := &Event{Provider: ProviderOpenClaw, Kind: KindToolPre}
-	reply, err := encodeOpenClawReply(base, decisionCore{
+	reply := encodeOpenClawReply(base, decisionCore{
 		kind: DecisionAsk, reason: "confirm this",
 		hasUpdatedInput: true, updatedInput: map[string]any{"command": "ls"},
 	}, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
 	ra, ok := reply.Output["requireApproval"].(map[string]any)
 	if !ok || ra["timeoutBehavior"] != "deny" || ra["description"] != "confirm this" {
 		t.Errorf("ask reply wrong: %+v", reply.Output)
@@ -166,10 +160,7 @@ func TestEncodeOpenClawAskAndUpdate(t *testing.T) {
 
 func TestEncodeOpenClawBlockPrompt(t *testing.T) {
 	base := &Event{Provider: ProviderOpenClaw, Kind: KindPromptSubmitted}
-	reply, err := encodeOpenClawReply(base, decisionCore{kind: DecisionBlockPrompt, reason: "policy"}, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reply := encodeOpenClawReply(base, decisionCore{kind: DecisionBlockPrompt, reason: "policy"}, nil, "")
 	if reply.Output["outcome"] != "block" || reply.Output["reason"] != "policy" || reply.Output["message"] != "policy" {
 		t.Errorf("prompt gate reply wrong: %+v", reply.Output)
 	}

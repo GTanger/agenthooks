@@ -245,11 +245,7 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 		if tool := toolOf(typed); tool != nil && !tool.Synthesized {
 			toolCallID = tool.ID
 		}
-		reply, encErr := encodeOpenClawReply(base, core, st, toolCallID)
-		if encErr != nil {
-			r.logger.Error("agenthooks: encode failed", "hook", fr.Hook, "error", encErr)
-			reply = &openclawReply{}
-		}
+		reply := encodeOpenClawReply(base, core, st, toolCallID)
 		reply.Seq = fr.Seq
 		if err := enc.Encode(reply); err != nil {
 			r.logger.Error("agenthooks: writing reply", "error", err)
