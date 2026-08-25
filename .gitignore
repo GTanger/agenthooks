@@ -4,3 +4,6 @@ bin/
 
 # e2e test artifacts
 *-marker.txt
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
