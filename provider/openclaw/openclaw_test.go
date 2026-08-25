@@ -28,8 +28,11 @@ func TestTypedViews(t *testing.T) {
 		t.Errorf("BeforeAgentRun wrong: %+v ok=%v", in, ok)
 	}
 	in, ok := AgentEnd(rawEvent(t, "agent_end.json", "agent_end"))
-	if !ok || !in.Success || in.FinalMessage == "" {
-		t.Errorf("AgentEnd wrong: %+v ok=%v", in, ok)
+	if !ok {
+		t.Fatal("AgentEnd failed to decode")
+	}
+	if !in.Success || in.FinalMessage == "" {
+		t.Errorf("AgentEnd wrong: %+v", in)
 	}
 	if in.Usage == nil || in.Usage.Output == nil || *in.Usage.Output != 137 {
 		t.Errorf("AgentEnd usage wrong: %+v", in.Usage)
@@ -44,8 +47,14 @@ func TestTypedViews(t *testing.T) {
 	if !ok || out.HarnessID != "openclaw" || len(out.AssistantTexts) != 1 {
 		t.Errorf("LlmOutput wrong: %+v ok=%v", out, ok)
 	}
-	if ctx, ok := Context(rawEvent(t, "before_agent_run.json", "before_agent_run")); !ok || ctx.WorkspaceDir != "/work/agent" || ctx.ModelID != "claude-opus-4-8" {
-		t.Errorf("Context wrong: %+v ok=%v", ctx, ok)
+	ctx, ok := Context(rawEvent(t, "before_agent_run.json", "before_agent_run"))
+	if !ok || ctx.WorkspaceDir != "/work/agent" || ctx.ModelID != "claude-opus-4-8" {
+		t.Fatalf("Context wrong: %+v ok=%v", ctx, ok)
+	}
+	// Unknown-field capture: the fixture carries context fields the struct
+	// does not declare; they must survive in Extra, not vanish.
+	if _, found := ctx.Extra["modelProviderId"]; !found {
+		t.Errorf("Context must capture unknown fields in Extra: %+v", ctx.Extra)
 	}
 	// A view must reject frames from a different hook.
 	if _, ok := BeforeToolCall(rawEvent(t, "after_tool_call.json", "after_tool_call")); ok {

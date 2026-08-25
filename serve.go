@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -135,6 +136,63 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 	return 0
 }
 
+// openclawObserveQueue is the unbounded FIFO between the serve loop and the
+// observe worker. Unbounded is deliberate: observe handlers run under a
+// deadline so the queue always drains, while any bound would let telemetry
+// backpressure block the loop and delay gate frames. Depth is logged at
+// every openclawQueueWarnDepth multiple so a pathological consumer is
+// visible instead of silent.
+type openclawObserveQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	items  []any
+	closed bool
+	logger *slog.Logger
+}
+
+const openclawQueueWarnDepth = 1024
+
+func newOpenclawObserveQueue(logger *slog.Logger) *openclawObserveQueue {
+	q := &openclawObserveQueue{logger: logger}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *openclawObserveQueue) push(typed any) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	q.items = append(q.items, typed)
+	if len(q.items)%openclawQueueWarnDepth == 0 {
+		q.logger.Warn("agenthooks: observe queue backlog", "depth", len(q.items))
+	}
+	q.cond.Signal()
+}
+
+// pop blocks until an item is available or the queue is closed and drained.
+func (q *openclawObserveQueue) pop() (any, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.items) == 0 && !q.closed {
+		q.cond.Wait()
+	}
+	if len(q.items) == 0 {
+		return nil, false
+	}
+	typed := q.items[0]
+	q.items = q.items[1:]
+	return typed, true
+}
+
+func (q *openclawObserveQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.cond.Broadcast()
+}
+
 // serveOpenClaw is the NDJSON loop behind the generated OpenClaw shim plugin.
 // It differs from the OpenCode loop in wire semantics only: replies are hook
 // return values rather than mutable-output merges, there is no initialize
@@ -145,35 +203,46 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 // Gating frames (tool.pre, prompt.submitted) dispatch inline so their reply
 // carries the decision; every other frame is acknowledged immediately and
 // dispatched on a single background worker, so a slow telemetry handler
-// cannot delay a queued gate. Observe frames keep their relative order on the
-// worker; a gate may run before an earlier observe handler finishes.
+// cannot delay a queued gate. The worker queue is unbounded (handlers are
+// deadline-bounded, so it always drains) — a bounded queue would reintroduce
+// gate blocking through telemetry backpressure. Observe frames keep their
+// relative order on the worker; a gate may run before an earlier observe
+// handler finishes.
 func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Reader, stdout io.Writer) int {
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 0, 64<<10), maxPayloadBytes)
 	enc := json.NewEncoder(stdout)
 	st := newOpenclawServeState()
 
-	deadlineFor := func(pol Policy) time.Duration {
+	deadlineFor := func(pol Policy, frameTimeout int64) time.Duration {
 		if pol.Timeout > 0 {
 			return pol.Timeout
 		}
-		// The shim renders --timeout from its gate deadline; without it a
-		// handler could keep burning long after the shim gave up.
+		// Gate frames carry the shim's per-hook deadline; without it a
+		// handler could keep burning long after the shim gave up. The serve
+		// invocation's --timeout (the max gate deadline) is the fallback.
+		if frameTimeout > 0 {
+			return time.Duration(frameTimeout) * time.Millisecond * 9 / 10
+		}
 		if inv.timeout > 0 {
 			return inv.timeout * 9 / 10
 		}
 		return defaultDeadline
 	}
 
-	observe := make(chan any, 256)
+	observe := newOpenclawObserveQueue(r.logger)
 	var workers sync.WaitGroup
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
-		for typed := range observe {
+		for {
+			typed, ok := observe.pop()
+			if !ok {
+				return
+			}
 			base := eventOf(typed)
 			pol := r.policy(base)
-			hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol))
+			hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol, 0))
 			if _, err := r.dispatch(hctx, typed); err != nil {
 				r.logger.Error("agenthooks: handler failed", "hook", base.NativeName, "error", err)
 			}
@@ -181,7 +250,7 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 		}
 	}()
 	defer workers.Wait()
-	defer close(observe)
+	defer observe.close()
 
 	for sc.Scan() {
 		line := sc.Bytes()
@@ -227,12 +296,12 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 				r.logger.Error("agenthooks: writing reply", "error", err)
 				return 1
 			}
-			observe <- typed
+			observe.push(typed)
 			continue
 		}
 
 		pol := r.policy(base)
-		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol))
+		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol, fr.TimeoutMS))
 		core, herr := r.dispatch(hctx, typed)
 		cancel()
 		if herr != nil {

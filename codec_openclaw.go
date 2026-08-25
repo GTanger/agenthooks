@@ -23,6 +23,10 @@ type openclawFrame struct {
 	Hook  string          `json:"hook"`
 	Event json.RawMessage `json:"event"`
 	Ctx   json.RawMessage `json:"ctx"`
+	// TimeoutMS is the shim's deadline for this gate frame (per-hook, from
+	// the manifest's blocking spec). The serve loop bounds the handler with
+	// it so the daemon stops working as soon as the shim has given up.
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
 }
 
 type openclawReply struct {

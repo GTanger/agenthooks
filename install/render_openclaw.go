@@ -227,7 +227,11 @@ export default {
         return Promise.resolve({ timedOut: true })
       }
       const id = ++seq
-      child.stdin.write(JSON.stringify({ seq: id, hook, event, ctx }) + "\n")
+      // Gate frames carry the shim deadline so the daemon can stop working
+      // as soon as the shim gives up (observe frames omit it).
+      const frame = { seq: id, hook, event, ctx }
+      if (timeoutMs !== undefined) frame.timeoutMs = timeoutMs
+      child.stdin.write(JSON.stringify(frame) + "\n")
       return new Promise((resolve) => {
         pending.set(id, resolve)
         const timer = setTimeout(() => {
