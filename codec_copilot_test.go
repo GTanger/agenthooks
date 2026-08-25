@@ -25,6 +25,7 @@ func TestCopilotEventNamesFromShape(t *testing.T) {
 		"agentStop":           {"copilot/agent_stop.json", KindStop},
 		"subagentStart":       {"copilot/subagent_start.json", KindSubagentStart},
 		"subagentStop":        {"copilot/subagent_stop.json", KindSubagentStop},
+		"preCompact":          {"copilot/pre_compact.json", KindCompactPre},
 		"notification":        {"copilot/notification.json", KindNotification},
 	}
 	for want, tc := range cases {

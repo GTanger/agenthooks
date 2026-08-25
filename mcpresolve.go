@@ -401,8 +401,8 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 			groups = append(groups, readMCPServersJSON(filepath.Join(home, ".kimi", "mcp.json")))
 		}
 	case ProviderCopilot:
-		// Workspace scope first: Copilot auto-loads .github/mcp.json and
-		// .mcp.json from the repo and those win name collisions against the
+		// Workspace scope first: Copilot auto-loads .mcp.json and
+		// .github/mcp.json from the repo and those win name collisions against the
 		// user-scope file. COPILOT_HOME overrides the user directory
 		// (defaults to ~/.copilot). Servers added per-session via
 		// --additional-mcp-config are invisible here by design: they never
@@ -410,8 +410,8 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		// misattributed.
 		if cwd != "" {
 			groups = append(groups,
-				readMCPServersJSON(filepath.Join(cwd, ".github", "mcp.json")),
-				readMCPServersJSON(filepath.Join(cwd, ".mcp.json")))
+				readMCPServersJSON(filepath.Join(cwd, ".mcp.json")),
+				readMCPServersJSON(filepath.Join(cwd, ".github", "mcp.json")))
 		}
 		dir := os.Getenv("COPILOT_HOME")
 		if dir == "" && home != "" {

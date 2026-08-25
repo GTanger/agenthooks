@@ -207,6 +207,16 @@ func TestCopilotDeny(t *testing.T) {
 	})
 	evs := rec.events(t)
 	requireKinds(t, evs, agenthooks.KindToolPre)
+	deniedShell := false
+	for _, e := range typedToolPres(evs) {
+		if e.Canonical == string(agenthooks.ToolShell) && e.Denied {
+			deniedShell = true
+			break
+		}
+	}
+	if !deniedShell {
+		t.Errorf("no denied shell tool.pre recorded; got:\n%s", summarize(evs))
+	}
 	if markerExists(proj, "denied-marker.txt") {
 		t.Error("marker exists: deny decision did not block the shell command on copilot")
 	}

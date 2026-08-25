@@ -103,6 +103,16 @@ type AgentStopInput struct {
 	Extra          map[string]json.RawMessage `json:"-"`
 }
 
+// SubagentStartInput is the native subagentStart payload.
+type SubagentStartInput struct {
+	Base
+	TranscriptPath   string                     `json:"transcriptPath"`
+	AgentName        string                     `json:"agentName"`
+	AgentDisplayName string                     `json:"agentDisplayName"`
+	AgentDescription string                     `json:"agentDescription"`
+	Extra            map[string]json.RawMessage `json:"-"`
+}
+
 // SubagentStopInput is the native subagentStop payload.
 type SubagentStopInput struct {
 	Base
@@ -114,6 +124,15 @@ type SubagentStopInput struct {
 	Response         string                     `json:"response"`
 	StopReason       string                     `json:"stopReason"`
 	Extra            map[string]json.RawMessage `json:"-"`
+}
+
+// PreCompactInput is the native preCompact payload.
+type PreCompactInput struct {
+	Base
+	TranscriptPath     string                     `json:"transcriptPath"`
+	Trigger            string                     `json:"trigger"`
+	CustomInstructions string                     `json:"customInstructions"`
+	Extra              map[string]json.RawMessage `json:"-"`
 }
 
 // NotificationInput is the native notification payload.
@@ -169,8 +188,16 @@ func AgentStop(e *agenthooks.Event) (*AgentStopInput, bool) {
 	return view[AgentStopInput](e, "agentStop")
 }
 
+func SubagentStart(e *agenthooks.Event) (*SubagentStartInput, bool) {
+	return view[SubagentStartInput](e, "subagentStart")
+}
+
 func SubagentStop(e *agenthooks.Event) (*SubagentStopInput, bool) {
 	return view[SubagentStopInput](e, "subagentStop")
+}
+
+func PreCompact(e *agenthooks.Event) (*PreCompactInput, bool) {
+	return view[PreCompactInput](e, "preCompact")
 }
 
 func Notification(e *agenthooks.Event) (*NotificationInput, bool) {

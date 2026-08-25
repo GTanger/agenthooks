@@ -1006,10 +1006,16 @@ func TestResolveMCPCopilotProjectScope(t *testing.T) {
 		}
 	}`)
 	writeConfig(t, filepath.Join(cwd, ".github", "mcp.json"), `{
-		"mcpServers": {"github": {"url": "https://workspace.example.com/mcp"}}
+		"mcpServers": {
+			"github": {"url": "https://workspace.example.com/mcp"},
+			"shared": {"url": "https://github-file.example.com/mcp"}
+		}
 	}`)
 	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
-		"mcpServers": {"tracker": {"url": "https://tracker.example.com/mcp"}}
+		"mcpServers": {
+			"tracker": {"url": "https://tracker.example.com/mcp"},
+			"shared":  {"url": "https://root-file.example.com/mcp"}
+		}
 	}`)
 	r := mcpTestRunner(t)
 
@@ -1025,6 +1031,13 @@ func TestResolveMCPCopilotProjectScope(t *testing.T) {
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" {
 		t.Errorf(".mcp.json server not resolved: %+v", ev.Tool.MCP)
+	}
+
+	// At workspace scope, .mcp.json takes precedence over .github/mcp.json.
+	ev = mcpToolPre(ProviderCopilot, cwd, "shared-search")
+	r.resolveMCP(ev)
+	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://root-file.example.com/mcp" {
+		t.Errorf(".mcp.json must outrank .github/mcp.json: %+v", ev.Tool.MCP)
 	}
 
 	// User scope still resolves for names the workspace does not define.

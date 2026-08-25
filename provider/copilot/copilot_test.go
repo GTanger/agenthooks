@@ -56,9 +56,17 @@ func TestViewsDecodeRecordedPayloads(t *testing.T) {
 			v, ok := AgentStop(e)
 			return ok && v.StopReason != "" && v.TranscriptPath != "", "AgentStop"
 		}},
+		{"subagent_start.json", "subagentStart", func(e *agenthooks.Event) (bool, string) {
+			v, ok := SubagentStart(e)
+			return ok && v.AgentName != "" && v.AgentDisplayName != "" && v.AgentDescription != "", "SubagentStart"
+		}},
 		{"subagent_stop.json", "subagentStop", func(e *agenthooks.Event) (bool, string) {
 			v, ok := SubagentStop(e)
 			return ok && v.AgentID != "" && v.AgentType != "" && v.Response != "", "SubagentStop"
+		}},
+		{"pre_compact.json", "preCompact", func(e *agenthooks.Event) (bool, string) {
+			v, ok := PreCompact(e)
+			return ok && v.TranscriptPath != "" && v.Trigger != "", "PreCompact"
 		}},
 		{"notification.json", "notification", func(e *agenthooks.Event) (bool, string) {
 			v, ok := Notification(e)
