@@ -23,6 +23,7 @@ func TestCopilotEventNamesFromShape(t *testing.T) {
 		"postToolUseFailure":  {"copilot/post_tool_use_failure.json", KindToolError},
 		"permissionRequest":   {"copilot/permission_request.json", KindPermission},
 		"agentStop":           {"copilot/agent_stop.json", KindStop},
+		"subagentStart":       {"copilot/subagent_start.json", KindSubagentStart},
 		"subagentStop":        {"copilot/subagent_stop.json", KindSubagentStop},
 		"notification":        {"copilot/notification.json", KindNotification},
 	}
