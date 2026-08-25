@@ -22,6 +22,8 @@ type config struct {
 	Out string `json:"out"`
 	// Deny names a CanonicalTool class to deny on tool.pre ("" allows all).
 	Deny string `json:"deny,omitempty"`
+	// RewriteCommand replaces shell tool arguments and explicitly allows the call.
+	RewriteCommand string `json:"rewrite_command,omitempty"`
 }
 
 // record is one JSONL line. Kind "tool.pre" lines are emitted twice: once by
@@ -42,6 +44,7 @@ type record struct {
 	ToolInput  json.RawMessage `json:"tool_input,omitempty"`
 	Prompt     string          `json:"prompt,omitempty"`
 	Denied     bool            `json:"denied,omitempty"`
+	Rewritten  bool            `json:"rewritten,omitempty"`
 	Raw        json.RawMessage `json:"raw,omitempty"`
 }
 
@@ -78,6 +81,7 @@ func main() {
 	})
 	r.OnToolPre(func(_ context.Context, e *agenthooks.ToolPreEvent) (agenthooks.ToolPreDecision, error) {
 		denied := cfg.Deny != "" && string(e.Tool.Canonical) == cfg.Deny
+		rewritten := cfg.RewriteCommand != "" && e.Tool.Canonical == agenthooks.ToolShell
 		appendRecord(cfg.Out, record{
 			Typed:     true,
 			TimeMS:    e.Time.UnixMilli(),
@@ -90,9 +94,13 @@ func main() {
 			Canonical: string(e.Tool.Canonical),
 			ToolInput: e.Tool.Input,
 			Denied:    denied,
+			Rewritten: rewritten,
 		})
 		if denied {
 			return agenthooks.Deny("blocked by agenthooks e2e"), nil
+		}
+		if rewritten {
+			return agenthooks.Allow().WithUpdatedInput(map[string]any{"command": cfg.RewriteCommand}), nil
 		}
 		return agenthooks.NoDecision(), nil
 	})

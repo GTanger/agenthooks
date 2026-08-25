@@ -70,9 +70,19 @@ type recorder struct {
 	Events string
 }
 
+type recorderConfig struct {
+	Deny           string `json:"deny,omitempty"`
+	RewriteCommand string `json:"rewrite_command,omitempty"`
+}
+
 // newRecorder links the recorder binary into a per-test directory and writes
 // its sidecar config. deny names a CanonicalTool class to deny ("" = allow).
 func newRecorder(t *testing.T, deny string) recorder {
+	t.Helper()
+	return newRecorderWithConfig(t, recorderConfig{Deny: deny})
+}
+
+func newRecorderWithConfig(t *testing.T, config recorderConfig) recorder {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "recorder")
@@ -86,7 +96,10 @@ func newRecorder(t *testing.T, deny string) recorder {
 		}
 	}
 	rec := recorder{Bin: bin, Events: filepath.Join(dir, "events.jsonl")}
-	cfg, err := json.Marshal(map[string]string{"out": rec.Events, "deny": deny})
+	cfg, err := json.Marshal(struct {
+		Out string `json:"out"`
+		recorderConfig
+	}{Out: rec.Events, recorderConfig: config})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +115,7 @@ func manifest(bin string) install.Manifest {
 		Command: []string{bin},
 		Hooks: []install.HookSpec{
 			{Kind: agenthooks.KindSessionStart, Blocking: true, Timeout: 30 * time.Second},
+			{Kind: agenthooks.KindSessionEnd, Blocking: true, Timeout: 30 * time.Second},
 			{Kind: agenthooks.KindPromptSubmitted, Blocking: true, Timeout: 30 * time.Second},
 			{Kind: agenthooks.KindToolPre, Blocking: true, Timeout: 30 * time.Second},
 			{Kind: agenthooks.KindToolPost, Blocking: true, Timeout: 30 * time.Second},
@@ -183,6 +197,7 @@ type event struct {
 	ToolInput  json.RawMessage `json:"tool_input"`
 	Prompt     string          `json:"prompt"`
 	Denied     bool            `json:"denied"`
+	Rewritten  bool            `json:"rewritten"`
 	Raw        json.RawMessage `json:"raw"`
 }
 
@@ -299,6 +314,16 @@ func requireNoBackfill(t *testing.T, evs []event) {
 // matters: bare "create an arbitrary file" gets refused as not a real task,
 // and "this is an automated test" reads as prompt injection to some models
 // (z-ai/glm-5.2 flagged both) — a purposeful fixture request lands better.
+func toolFailurePrompt() string {
+	return "Please use the view tool exactly once to open `no-such-agenthooks-fixture.txt`. " +
+		"The file intentionally does not exist. Do not use the shell, retry, or run any other tools."
+}
+
+func oneShotShellMarkerPrompt(markerName string) string {
+	return "Run the shell command `touch " + markerName + "` exactly once, then stop without " +
+		"checking the file or retrying the command, regardless of the result."
+}
+
 func shellMarkerPrompt(markerName string) string {
 	return "Please set up a fixture for me: our test suite expects an empty placeholder file named " +
 		markerName + " in the current working directory. It must be created by the shell command `touch " +

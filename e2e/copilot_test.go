@@ -24,11 +24,12 @@ func copilotHome(t *testing.T) string {
 // non-interactive mode (Copilot refuses to run tools otherwise); it does NOT
 // suppress hooks — preToolUse still fires and its deny is still enforced,
 // which is what TestCopilotDeny relies on.
-func runCopilot(t *testing.T, proj, home, prompt string) {
+func runCopilot(t *testing.T, proj, home, prompt string, options ...string) {
 	t.Helper()
 	bin := requireE2E(t, "copilot")
-	if _, err := runAgent(t, proj, []string{"COPILOT_HOME=" + home}, bin,
-		"-p", prompt, "--allow-all-tools", "--no-color"); err != nil {
+	args := []string{"-p", prompt, "--allow-all-tools", "--no-color"}
+	args = append(args, options...)
+	if _, err := runAgent(t, proj, []string{"COPILOT_HOME=" + home}, bin, args...); err != nil {
 		// Don't fail here: a crashed turn records no tool.pre, and
 		// runToolTurn retries once with a fresh sandbox.
 		t.Logf("copilot -p failed (runToolTurn retries if no events landed): %v", err)
@@ -62,6 +63,7 @@ func TestCopilotEventFields(t *testing.T) {
 	evs := rec.events(t)
 	requireKinds(t, evs,
 		agenthooks.KindSessionStart,
+		agenthooks.KindSessionEnd,
 		agenthooks.KindPromptSubmitted,
 		agenthooks.KindToolPre,
 		agenthooks.KindToolPost,
@@ -104,6 +106,20 @@ func TestCopilotEventFields(t *testing.T) {
 		}
 		if len(in.Extra) > 0 {
 			t.Errorf("SessionStart has unknown fields %v — structs incomplete (raw: %s)", keys(in.Extra), e.Raw)
+		}
+	}
+
+	for _, e := range ofKind(evs, agenthooks.KindSessionEnd) {
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		in, ok := copilot.SessionEnd(ev)
+		if !ok {
+			t.Fatalf("SessionEnd view rejected native %q", e.Native)
+		}
+		if in.SessionID == "" || in.Timestamp == 0 || in.Reason == "" {
+			t.Errorf("SessionEnd fields incomplete: %+v (raw: %s)", in, e.Raw)
+		}
+		if len(in.Extra) > 0 {
+			t.Errorf("SessionEnd has unknown fields %v (raw: %s)", keys(in.Extra), e.Raw)
 		}
 	}
 
@@ -184,6 +200,96 @@ func TestCopilotEventFields(t *testing.T) {
 		}
 	}
 	t.Errorf("no shell tool.pre normalized from copilot; got:\n%s", summarize(evs))
+}
+
+// TestCopilotToolFailure requires a real failed file-view call to produce the
+// native postToolUseFailure event rather than treating failure coverage as an
+// optional side effect of denial.
+func TestCopilotToolFailure(t *testing.T) {
+	t.Parallel()
+	requireE2E(t, "copilot")
+	rec, _ := runToolTurn(t, func() (recorder, string) {
+		rec := newRecorder(t, "")
+		home := copilotHome(t)
+		proj := t.TempDir()
+		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		runCopilot(t, proj, home, toolFailurePrompt())
+		return rec, proj
+	})
+	evs := rec.events(t)
+	requireKinds(t, evs, agenthooks.KindToolPre, agenthooks.KindToolError)
+	for _, e := range ofKind(evs, agenthooks.KindToolError) {
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		in, ok := copilot.PostToolUseFailure(ev)
+		if !ok {
+			t.Fatalf("PostToolUseFailure view rejected native %q", e.Native)
+		}
+		if in.Error == "" && in.ToolResult.TextResultForLM == "" {
+			t.Errorf("PostToolUseFailure carries no error text: %+v (raw: %s)", in, e.Raw)
+		}
+		if len(in.Extra) > 0 {
+			t.Errorf("PostToolUseFailure has unknown fields %v (raw: %s)", keys(in.Extra), e.Raw)
+		}
+	}
+}
+
+// TestCopilotModifiedArgs proves Copilot executes modifiedArgs rather than the
+// original shell command. This catches a wire-shape regression that unit tests
+// can only show was serialized, not honored by the CLI.
+func TestCopilotModifiedArgs(t *testing.T) {
+	t.Parallel()
+	requireE2E(t, "copilot")
+	const original = "original-marker.txt"
+	const rewritten = "rewritten-marker.txt"
+	rec, proj := runToolTurn(t, func() (recorder, string) {
+		rec := newRecorderWithConfig(t, recorderConfig{RewriteCommand: "touch " + rewritten})
+		home := copilotHome(t)
+		proj := t.TempDir()
+		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		runCopilot(t, proj, home, oneShotShellMarkerPrompt(original))
+		return rec, proj
+	})
+	evs := rec.events(t)
+	requireKinds(t, evs, agenthooks.KindToolPre, agenthooks.KindToolPost)
+	rewrittenShell := false
+	for _, e := range typedToolPres(evs) {
+		if e.Canonical == string(agenthooks.ToolShell) && e.Rewritten {
+			rewrittenShell = true
+			break
+		}
+	}
+	if !rewrittenShell {
+		t.Errorf("no rewritten shell tool.pre recorded; got:\n%s", summarize(evs))
+	}
+	if markerExists(proj, original) {
+		t.Error("original marker exists: Copilot ignored modifiedArgs")
+	}
+	if !markerExists(proj, rewritten) {
+		t.Error("rewritten marker missing: Copilot did not execute modifiedArgs")
+	}
+}
+
+// TestCopilotPluginScope runs the generated local-plugin layout through
+// Copilot itself; renderer tests alone cannot prove --plugin-dir discovers and
+// executes the hook file. User scope is exercised by the other tests.
+func TestCopilotPluginScope(t *testing.T) {
+	t.Parallel()
+	requireE2E(t, "copilot")
+	const marker = "plugin-scope-marker.txt"
+	rec, proj := runToolTurn(t, func() (recorder, string) {
+		rec := newRecorder(t, "")
+		home := copilotHome(t)
+		proj := t.TempDir()
+		pluginDir := t.TempDir()
+		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopePlugin, pluginDir)
+		runCopilot(t, proj, home, oneShotShellMarkerPrompt(marker), "--plugin-dir", pluginDir)
+		return rec, proj
+	})
+	evs := rec.events(t)
+	requireKinds(t, evs, agenthooks.KindToolPre, agenthooks.KindToolPost)
+	if !markerExists(proj, marker) {
+		t.Error("plugin-scope marker missing: generated hooks were not exercised")
+	}
 }
 
 // TestCopilotDeny verifies the load-bearing rule of the whole Copilot codec
