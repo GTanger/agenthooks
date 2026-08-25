@@ -79,6 +79,16 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindPermission:      caps(CapAllow, CapDeny), // via HTTP reply (§8)
 		// session.idle cannot continue the agent: empty set on KindStop.
 	},
+	ProviderOpenClaw: {
+		// before_tool_call returns {block, blockReason, requireApproval,
+		// params}; requireApproval resolves headless via timeoutBehavior
+		// (verified 2026.6.34), so Ask is honest. before_agent_run is the
+		// blockable prompt gate ({outcome: "block"}); its result carries no
+		// context channel. Everything else is observe-only — after_tool_call,
+		// agent_end, session_*, llm_* returns are ignored by the Gateway.
+		KindToolPre:         caps(CapDeny, CapAsk, CapUpdateInput),
+		KindPromptSubmitted: caps(CapDeny),
+	},
 	ProviderCopilot: {
 		// preToolUse and permissionRequest are the only decision-capable
 		// events: deny was observed enforced end to end, and it fires even

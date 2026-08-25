@@ -1,0 +1,1 @@
+{"seq":9,"hook":"session_end","event":{"sessionId":"oclaw-sess-1","sessionKey":"agent:dev:main","messageCount":12,"reason":"idle","nextSessionId":"oclaw-sess-2","nextSessionKey":"agent:dev:main"},"ctx":{"sessionId":"oclaw-sess-1","sessionKey":"agent:dev:main","agentId":"dev"}}

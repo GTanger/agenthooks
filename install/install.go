@@ -91,6 +91,8 @@ func Render(m Manifest, t Target) (fs.FS, error) {
 		return renderGemini(m, t)
 	case agenthooks.ProviderOpenCode:
 		return renderOpenCode(m, t)
+	case agenthooks.ProviderOpenClaw:
+		return renderOpenClaw(m, t)
 	case agenthooks.ProviderKimi:
 		return renderKimi(m, t)
 	case agenthooks.ProviderCopilot:
