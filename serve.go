@@ -136,21 +136,26 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 	return 0
 }
 
-// openclawObserveQueue is the unbounded FIFO between the serve loop and the
-// observe worker. Unbounded is deliberate: observe handlers run under a
-// deadline so the queue always drains, while any bound would let telemetry
-// backpressure block the loop and delay gate frames. Depth is logged at
-// every openclawQueueWarnDepth multiple so a pathological consumer is
-// visible instead of silent.
+// openclawObserveQueue is the FIFO between the serve loop and the observe
+// worker. Its two constraints pull in opposite directions: a blocking bound
+// would let telemetry backpressure stall the loop and delay gate frames,
+// while no bound at all could exhaust a long-lived Gateway child if a
+// consumer's handlers are persistently slower than the frame rate. So push
+// never blocks: past openclawQueueMaxDepth the oldest queued frame is
+// dropped, and drops are counted and logged so the loss is visible.
 type openclawObserveQueue struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	items  []any
-	closed bool
-	logger *slog.Logger
+	mu      sync.Mutex
+	cond    *sync.Cond
+	items   []any
+	closed  bool
+	dropped int
+	logger  *slog.Logger
 }
 
-const openclawQueueWarnDepth = 1024
+const (
+	openclawQueueWarnDepth = 1024
+	openclawQueueMaxDepth  = 4096
+)
 
 func newOpenclawObserveQueue(logger *slog.Logger) *openclawObserveQueue {
 	q := &openclawObserveQueue{logger: logger}
@@ -163,6 +168,15 @@ func (q *openclawObserveQueue) push(typed any) {
 	defer q.mu.Unlock()
 	if q.closed {
 		return
+	}
+	if len(q.items) >= openclawQueueMaxDepth {
+		// Drop the oldest frame rather than block: gates must keep flowing,
+		// and the newest telemetry is the most likely to still matter.
+		q.items = q.items[1:]
+		q.dropped++
+		if q.dropped == 1 || q.dropped%openclawQueueWarnDepth == 0 {
+			q.logger.Error("agenthooks: observe queue full; dropping oldest frame", "dropped_total", q.dropped, "depth", len(q.items))
+		}
 	}
 	q.items = append(q.items, typed)
 	if len(q.items)%openclawQueueWarnDepth == 0 {
@@ -215,17 +229,24 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 	st := newOpenclawServeState()
 
 	deadlineFor := func(pol Policy, frameTimeout int64) time.Duration {
-		if pol.Timeout > 0 {
-			return pol.Timeout
-		}
 		// Gate frames carry the shim's per-hook deadline; without it a
 		// handler could keep burning long after the shim gave up. The serve
 		// invocation's --timeout (the max gate deadline) is the fallback.
+		var shim time.Duration
 		if frameTimeout > 0 {
-			return time.Duration(frameTimeout) * time.Millisecond * 9 / 10
+			shim = time.Duration(frameTimeout) * time.Millisecond * 9 / 10
+		} else if inv.timeout > 0 {
+			shim = inv.timeout * 9 / 10
 		}
-		if inv.timeout > 0 {
-			return inv.timeout * 9 / 10
+		// The policy timeout can only tighten the shim deadline, never extend
+		// it: once the shim has given up, a gate decision is unusable.
+		switch {
+		case pol.Timeout > 0 && shim > 0:
+			return min(pol.Timeout, shim)
+		case pol.Timeout > 0:
+			return pol.Timeout
+		case shim > 0:
+			return shim
 		}
 		return defaultDeadline
 	}

@@ -1,10 +1,14 @@
 package agenthooks
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -115,12 +119,20 @@ func TestServeOpenClawFrameDeadlineBoundsHandler(t *testing.T) {
 }
 
 func TestServeOpenClawObserveBackpressureDoesNotBlockGates(t *testing.T) {
-	// More observe frames than any fixed buffer, each with a slow handler:
-	// the loop must still acknowledge every frame and answer the trailing
-	// gate without waiting for the telemetry backlog to drain.
+	// More observe frames than the worker can drain, with every observe
+	// handler HELD on a gate we control: the trailing tool gate's reply must
+	// still arrive while the entire telemetry backlog is unprocessed. Run
+	// waits for the worker before returning, so the timing claim needs a
+	// live read of the reply stream, not a post-hoc parse.
 	r := quietRunner()
+	var completed atomic.Int32
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	r.OnSessionEnd(func(ctx context.Context, e *SessionEndEvent) error {
-		time.Sleep(time.Millisecond)
+		<-release
+		completed.Add(1)
 		return nil
 	})
 	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
@@ -129,25 +141,49 @@ func TestServeOpenClawObserveBackpressureDoesNotBlockGates(t *testing.T) {
 
 	const observeFrames = 300
 	sessionEnd := strings.TrimSpace(string(fixture(t, "openclaw/session_end.json")))
-	lines := make([]string, 0, observeFrames+1)
+	var in bytes.Buffer
 	for i := 0; i < observeFrames; i++ {
-		lines = append(lines, sessionEnd)
+		in.WriteString(sessionEnd + "\n")
 	}
-	lines = append(lines, strings.TrimSpace(string(fixture(t, "openclaw/before_tool_call.json"))))
+	in.WriteString(strings.TrimSpace(string(fixture(t, "openclaw/before_tool_call.json"))) + "\n")
 
-	var out, errb bytes.Buffer
-	code := r.Run(context.Background(), []string{"agenthooks", "serve", "--provider=openclaw"},
-		strings.NewReader(strings.Join(lines, "\n")+"\n"), &out, &errb)
-	if code != 0 {
+	outR, outW := io.Pipe()
+	var errb bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		code := r.Run(context.Background(), []string{"agenthooks", "serve", "--provider=openclaw"}, &in, outW, &errb)
+		_ = outW.Close()
+		done <- code
+	}()
+
+	sc := bufio.NewScanner(outR)
+	gateSeen := false
+	replies := 0
+	for sc.Scan() {
+		replies++
+		var reply testReply
+		if err := json.Unmarshal(sc.Bytes(), &reply); err != nil {
+			t.Fatalf("bad reply line %q: %v", sc.Text(), err)
+		}
+		if reply.Output["block"] == true {
+			gateSeen = true
+			break
+		}
+	}
+	if !gateSeen {
+		t.Fatal("gate reply never arrived")
+	}
+	if replies != observeFrames+1 {
+		t.Errorf("gate reply arrived after %d replies, want %d", replies, observeFrames+1)
+	}
+	if got := completed.Load(); got != 0 {
+		t.Errorf("gate decided after %d observers ran; backlog should still be fully held", got)
+	}
+
+	unblock()
+	go func() { _, _ = io.Copy(io.Discard, outR) }()
+	if code := <-done; code != 0 {
 		t.Fatalf("serve exit %d, stderr: %s", code, errb.String())
-	}
-	replies := parseReplies(t, out.String())
-	if len(replies) != observeFrames+1 {
-		t.Fatalf("expected %d replies, got %d", observeFrames+1, len(replies))
-	}
-	last := replies[len(replies)-1]
-	if last.Output["block"] != true || last.Output["blockReason"] != "gated" {
-		t.Fatalf("gate behind observe backlog must still decide: %+v", last)
 	}
 }
 
