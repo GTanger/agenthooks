@@ -101,6 +101,9 @@ func TestRenderOpenClawPlugin(t *testing.T) {
 	if !strings.Contains(shim, `"agenthooks: hook timed out (fail-closed)"`) {
 		t.Error("a shim timeout must carry the timeout reason")
 	}
+	if !strings.Contains(shim, "llmByRun.delete(runKey)") {
+		t.Error("agent_end must consume the runId-keyed llm_output entry it read")
+	}
 	if !strings.Contains(shim, "if (cached !== undefined) llmByRun.delete(sessionKey)") {
 		t.Error("agent_end must consume exactly the llm_output cache key that served the splice")
 	}
