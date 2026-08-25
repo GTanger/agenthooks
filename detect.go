@@ -31,6 +31,7 @@ var validProviders = map[Provider]bool{
 	ProviderCodex:      true,
 	ProviderGemini:     true,
 	ProviderOpenCode:   true,
+	ProviderOpenClaw:   true,
 	ProviderKimi:       true,
 }
 
@@ -141,11 +142,16 @@ func detectFromShape(payload []byte) (Provider, bool) {
 		SessionID      string          `json:"session_id"`
 		Seq            json.RawMessage `json:"seq"`
 		Hook           string          `json:"hook"`
+		Event          json.RawMessage `json:"event"`
 	}
 	if err := json.Unmarshal(payload, &probe); err != nil {
 		return "", false
 	}
 	switch {
+	// Both shim dialects frame as {seq, hook, ...}; OpenClaw carries the
+	// payload under "event" (+"ctx"), OpenCode under "input"/"output".
+	case probe.Hook != "" && len(probe.Seq) > 0 && len(probe.Event) > 0:
+		return ProviderOpenClaw, true
 	case probe.Hook != "" && len(probe.Seq) > 0:
 		return ProviderOpenCode, true
 	case probe.ConversationID != "":

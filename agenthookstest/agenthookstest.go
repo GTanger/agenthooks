@@ -62,6 +62,8 @@ func FixtureDir(p agenthooks.Provider) string {
 		return "gemini"
 	case agenthooks.ProviderOpenCode:
 		return "opencode"
+	case agenthooks.ProviderOpenClaw:
+		return "openclaw"
 	case agenthooks.ProviderKimi:
 		return "kimi"
 	}
@@ -105,16 +107,18 @@ func AssertNoOp(tb testing.TB, provider agenthooks.Provider, res Result) {
 		if got != "" {
 			tb.Fatalf("%s no-op stdout = %q, want empty", provider, got)
 		}
-	case agenthooks.ProviderOpenCode:
+	case agenthooks.ProviderOpenCode, agenthooks.ProviderOpenClaw:
+		// Both shim dialects reply {seq, output?, error?}; a no-op carries
+		// neither a decision output nor an error.
 		var reply struct {
 			Output map[string]any `json:"output"`
 			Error  string         `json:"error"`
 		}
 		if err := json.Unmarshal(res.Stdout, &reply); err != nil {
-			tb.Fatalf("opencode no-op stdout = %q: %v", got, err)
+			tb.Fatalf("%s no-op stdout = %q: %v", provider, got, err)
 		}
 		if reply.Error != "" || len(reply.Output) > 0 {
-			tb.Fatalf("opencode no-op carries a decision: %q", got)
+			tb.Fatalf("%s no-op carries a decision: %q", provider, got)
 		}
 	default:
 		if got != "{}" {

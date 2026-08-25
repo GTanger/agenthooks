@@ -54,6 +54,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeGemini(v, conf, now, payload)
 	case ProviderOpenCode:
 		return decodeOpenCodeLine(v, conf, now, payload)
+	case ProviderOpenClaw:
+		return decodeOpenClawLine(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
 	}
@@ -79,6 +81,18 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		reply, err := encodeOpenCodeReply(typed, base, d)
 		if err != nil {
 			return wireResponse{}, err
+		}
+		out, err := json.Marshal(reply)
+		if err != nil {
+			return wireResponse{}, err
+		}
+		return wireResponse{Stdout: out}, nil
+	case ProviderOpenClaw:
+		reply := encodeOpenClawReply(base, d, nil, "")
+		// Run mode handles one frame per invocation; carry its seq so the
+		// caller can still correlate the reply.
+		if seq := rawField(base.Raw, "seq"); len(seq) > 0 {
+			_ = json.Unmarshal(seq, &reply.Seq)
 		}
 		out, err := json.Marshal(reply)
 		if err != nil {
