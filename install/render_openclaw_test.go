@@ -89,8 +89,8 @@ func TestRenderOpenClawPlugin(t *testing.T) {
 	if !strings.Contains(shim, "(reply?.timedOut || reply?.error) && FAIL_CLOSED") {
 		t.Error("a daemon-reported error must fail closed like a timeout")
 	}
-	if !strings.Contains(shim, `llmByRun.delete(ctx?.sessionId ?? "")`) {
-		t.Error("agent_end must consume the sessionId-keyed llm_output fallback entry")
+	if !strings.Contains(shim, "if (cached !== undefined) llmByRun.delete(sessionKey)") {
+		t.Error("agent_end must consume exactly the llm_output cache key that served the splice")
 	}
 
 	// Gateway hooks hand plugins the full config incl. auth secrets; the shim
