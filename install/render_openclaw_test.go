@@ -86,6 +86,27 @@ func TestRenderOpenClawPlugin(t *testing.T) {
 	if !strings.Contains(shim, `call("gate_timeout", { toolCallId: event.toolCallId, reason }, null)`) {
 		t.Error("fail-closed tool gate must report the local block to the daemon")
 	}
+	// Both failure channels fail closed only under FAIL_CLOSED, each with its
+	// own reason so gate_timeout telemetry does not misdiagnose errors as
+	// timeouts.
+	if !strings.Contains(shim, "if (reply?.timedOut && FAIL_CLOSED) {") {
+		t.Error("a shim timeout must fail closed only under FAIL_CLOSED")
+	}
+	if !strings.Contains(shim, "if (reply?.error && FAIL_CLOSED) {") {
+		t.Error("a daemon-reported error must fail closed only under FAIL_CLOSED")
+	}
+	if !strings.Contains(shim, `"agenthooks: hook failed (fail-closed): " + reply.error`) {
+		t.Error("a daemon-reported error must carry an error-specific reason")
+	}
+	if !strings.Contains(shim, `"agenthooks: hook timed out (fail-closed)"`) {
+		t.Error("a shim timeout must carry the timeout reason")
+	}
+	if !strings.Contains(shim, "llmByRun.delete(runKey)") {
+		t.Error("agent_end must consume the runId-keyed llm_output entry it read")
+	}
+	if !strings.Contains(shim, "if (cached !== undefined) llmByRun.delete(sessionKey)") {
+		t.Error("agent_end must consume exactly the llm_output cache key that served the splice")
+	}
 
 	// Gateway hooks hand plugins the full config incl. auth secrets; the shim
 	// must forward only the allowlisted fields, and route every forwarded ctx

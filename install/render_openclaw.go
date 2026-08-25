@@ -248,8 +248,7 @@ export default {
       return { port: ctx?.port, workspaceDir: ctx?.workspaceDir }
     }
 
-    const failClosedResult = (hook, event) => {
-      const reason = "agenthooks: hook timed out (fail-closed)"
+    const failClosedResult = (hook, event, reason) => {
       if (hook === "before_agent_run") {
         return { outcome: "block", reason }
       }
@@ -272,8 +271,19 @@ export default {
           return
         }
         if (hook === "agent_end") {
-          const cached = llmByRun.get(event?.runId ?? "") ?? llmByRun.get(ctx?.sessionId ?? "")
-          if (event?.runId) llmByRun.delete(event.runId)
+          // Consume exactly the cache entry that serves the splice: llm_output
+          // keys by runId when it has one and sessionId otherwise. Deleting
+          // any other key could destroy a concurrent turn's pending entry;
+          // leaving the consumed one would splice it into a later agent_end.
+          const runKey = event?.runId ?? ""
+          let cached = llmByRun.get(runKey)
+          if (cached !== undefined) {
+            llmByRun.delete(runKey)
+          } else {
+            const sessionKey = ctx?.sessionId ?? ""
+            cached = llmByRun.get(sessionKey)
+            if (cached !== undefined) llmByRun.delete(sessionKey)
+          }
           const spliced = cached ? { ...event, finalMessage: cached.finalMessage, usage: cached.usage } : event
           void call(hook, spliced, sanitizeCtx(hook, ctx))
           return
@@ -283,7 +293,14 @@ export default {
           return
         }
         return call(hook, event, sanitizeCtx(hook, ctx), gateTimeoutMs).then((reply) => {
-          if (reply?.timedOut && FAIL_CLOSED) return failClosedResult(hook, event)
+          // A reply without output is the daemon's legitimate "no decision";
+          // only a shim timeout or a daemon-reported error may fail closed.
+          if (reply?.timedOut && FAIL_CLOSED) {
+            return failClosedResult(hook, event, "agenthooks: hook timed out (fail-closed)")
+          }
+          if (reply?.error && FAIL_CLOSED) {
+            return failClosedResult(hook, event, "agenthooks: hook failed (fail-closed): " + reply.error)
+          }
           return reply?.output
         })
       })
