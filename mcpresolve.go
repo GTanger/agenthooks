@@ -71,13 +71,6 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any,
 		r.resolveOpenCodeMCP(tc, *inventory)
 		return
 	}
-	// Copilot branches here rather than in resolveMCPProvider's switch: that
-	// path only enriches a tc.MCP the codec already built, and Copilot's
-	// unmarked <server>-<tool> names leave it nil, so it would return early.
-	if base.Provider == ProviderCopilot {
-		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilot, base.Session.CWD))
-		return
-	}
 	r.resolveMCPProvider(ctx, typed)
 }
 
@@ -231,28 +224,6 @@ func (r *Runner) resolveOpenCodeMCP(tc *ToolCall, entries []mcpConfigEntry) {
 	tc.Canonical = ToolMCP
 }
 
-// resolveCopilotMCP detects and resolves Copilot MCP calls. Copilot registers
-// MCP tools as <server>-<tool> with the configured name verbatim (verified
-// against GitHub Copilot CLI 1.0.80) and no reserved prefix, so — as with
-// OpenCode — the codec cannot classify them and a configured-name match must
-// do both the detection and the transport attach.
-//
-// The "-" separator makes a false positive likelier than OpenCode's "_":
-// hyphens are common inside native tool names, so a native `foo-bar` collides
-// whenever a server named `foo` is configured. Requiring a config match bounds
-// the damage, and matchSanitizedPrefix already declines ambiguous ties.
-func (r *Runner) resolveCopilotMCP(tc *ToolCall, entries []mcpConfigEntry) {
-	if tc.MCP != nil && (tc.MCP.URL != "" || tc.MCP.Command != "") {
-		return
-	}
-	matched, server, tool := matchSanitizedPrefix(entries, tc.Name, "", "-", verbatimMCPName)
-	if matched == nil {
-		return
-	}
-	tc.MCP = &MCPCall{Server: server, Tool: tool, URL: matched.URL, Command: matched.Command, FromConfig: true}
-	tc.Canonical = ToolMCP
-}
-
 // matchSanitizedPrefix finds the unique config entry whose sanitized name,
 // followed by sep, prefixes the tool name's post-namePrefix remainder.
 // Longest match wins; a tie is ambiguous and matches nothing. Returns the
@@ -399,26 +370,6 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		}
 		if home != "" {
 			groups = append(groups, readMCPServersJSON(filepath.Join(home, ".kimi", "mcp.json")))
-		}
-	case ProviderCopilot:
-		// Workspace scope first: Copilot auto-loads .github/mcp.json and
-		// .mcp.json from the repo and those win name collisions against the
-		// user-scope file. COPILOT_HOME overrides the user directory
-		// (defaults to ~/.copilot). Servers added per-session via
-		// --additional-mcp-config are invisible here by design: they never
-		// touch disk, so a call using one stays unresolved rather than
-		// misattributed.
-		if cwd != "" {
-			groups = append(groups,
-				readMCPServersJSON(filepath.Join(cwd, ".github", "mcp.json")),
-				readMCPServersJSON(filepath.Join(cwd, ".mcp.json")))
-		}
-		dir := os.Getenv("COPILOT_HOME")
-		if dir == "" && home != "" {
-			dir = filepath.Join(home, ".copilot")
-		}
-		if dir != "" {
-			groups = append(groups, readMCPServersJSON(filepath.Join(dir, "mcp-config.json")))
 		}
 	case ProviderOpenCode:
 		// opencode.json(c) at project root; global config under

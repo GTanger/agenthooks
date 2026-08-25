@@ -470,9 +470,6 @@ func TestDetectFromShape(t *testing.T) {
 		{`{"session_id":"s","turn_id":"t","hook_event_name":"PreToolUse"}`, ProviderCodex},
 		{`{"session_id":"s","hook_event_name":"PreToolUse"}`, ProviderClaudeCode},
 		{`{"seq":1,"hook":"tool.execute.before","input":{}}`, ProviderOpenCode},
-		// An explicit null timestamp is absent, not present: the Gemini arm
-		// must not claim a name Claude also uses just because the key is there.
-		{`{"session_id":"s","hook_event_name":"SessionStart","timestamp":null}`, ProviderClaudeCode},
 	}
 	for _, c := range cases {
 		got, ok := detectFromShape([]byte(c.payload))

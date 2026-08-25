@@ -21,7 +21,6 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenClaw   Provider = "openclaw"  // OpenClaw Gateway (typed plugin hooks via shim)
 	ProviderKimi       Provider = "kimi-code" // Kimi Code CLI ("kimi" accepted as a flag alias)
-	ProviderCopilot    Provider = "copilot"   // GitHub Copilot CLI (hooks are CLI-only)
 )
 
 // Variant refines Provider where runtime behavior genuinely differs.

@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, and GitHub Copilot CLI.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, and OpenClaw.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -122,7 +122,7 @@ degradation; stage errors return as errors.
 | Package | Purpose |
 |---|---|
 | `agenthooks` | Envelope, decisions, capability matrix, policy, runtime (`Main`/`Run`), quirk registry |
-| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,kimicode,copilot}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
+| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,kimicode}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
 | `install` | One Go `Manifest` → correct `hooks.json` / `settings.json` / `config.toml` / plugin scaffolding per provider, workarounds baked in |
 | `transcript` | Best-effort JSONL transcript readers |
 | `agenthookstest` | Fixture corpus, in-process harness, fake-provider spawner |
@@ -151,9 +151,7 @@ err := install.Install(ctx, m, install.Target{
 Generated configs bake in the argv contract (`mybinary agenthooks run
 --provider=...`), per-provider timeout units, async workarounds (sync `Stop`
 on Claude cowork, backgrounder wrapper on Codex), Cursor `failClosed`, and
-Codex trust-hash pre-seeding. Copilot configs omit `matcher` entirely: an
-empty matcher is a validation error there that discards the whole plugin hook
-config, and an absent one already means match-all.
+Codex trust-hash pre-seeding.
 
 ## Semantics worth knowing
 
@@ -210,18 +208,6 @@ config, and an absent one already means match-all.
   ambiguous or unrecoverable matches stay empty.
   Disable with `WithoutMCPResolution()` (everything) or
   `WithoutMCPListFallback()` (provider CLI probes).
-- Copilot hooks are **CLI-only** (the IDE surfaces fire nothing) and the
-  dialect needs the most repair: most payloads omit their own event name, so
-  the codec reconstructs it from the payload shape — the shapes are disjoint,
-  so this is exact. `toolArgs` is a JSON-encoded *string* on
-  `pre`/`postToolUse` while `permissionRequest` ships a plain object in
-  `toolInput`; both normalize to an object. No tool-call id ships at all, so
-  ids are synthesized. `preToolUse` denies the call on **any** non-zero exit
-  regardless of stdout, so the codec never signals through the exit code — it
-  always exits 0 and puts the verdict on stdout, which keeps a crashed hook
-  from becoming a total tool-call outage. `prompt.submitted` declares an empty
-  capability set: Copilot drops command-hook output for `userPromptSubmitted`,
-  so pretending to block there would silently allow.
 - The quirk registry (`agenthooks.Quirks()`) is the machine-readable list of
   provider glue this library hides, and doubles as the conformance-test plan.
 
