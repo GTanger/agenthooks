@@ -206,6 +206,27 @@ func TestOpenclawObserveQueueCapDropsOldest(t *testing.T) {
 	}
 }
 
+func TestServeOpenClawSurvivesOversizedFrame(t *testing.T) {
+	// One oversized frame must cost only itself: the loop drops it and keeps
+	// serving, so later gates still get decisions instead of shim timeouts.
+	r := quietRunner()
+	r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+		return Deny("still alive"), nil
+	})
+	big := `{"seq":1,"hook":"agent_end","event":{"messages":"` + strings.Repeat("x", maxPayloadBytes+1024) + `"},"ctx":{}}`
+	lines := big + "\n" + strings.TrimSpace(string(fixture(t, "openclaw/before_tool_call.json"))) + "\n"
+	var out, errb bytes.Buffer
+	code := r.Run(context.Background(), []string{"agenthooks", "serve", "--provider=openclaw"},
+		strings.NewReader(lines), &out, &errb)
+	if code != 0 {
+		t.Fatalf("serve exit %d, stderr: %s", code, errb.String())
+	}
+	replies := parseReplies(t, out.String())
+	if len(replies) != 1 || replies[0].Output["blockReason"] != "still alive" {
+		t.Fatalf("gate after oversized frame must still decide: %+v", replies)
+	}
+}
+
 func TestServeOpenClawPromptGate(t *testing.T) {
 	r := quietRunner()
 	r.OnPromptSubmitted(func(ctx context.Context, e *PromptEvent) (PromptDecision, error) {
