@@ -187,6 +187,25 @@ func TestServeOpenClawObserveBackpressureDoesNotBlockGates(t *testing.T) {
 	}
 }
 
+func TestOpenclawObserveQueueCapDropsOldest(t *testing.T) {
+	q := newOpenclawObserveQueue(quietRunner().logger)
+	const overflow = 10
+	for i := 0; i < openclawQueueMaxDepth+overflow; i++ {
+		q.push(i)
+	}
+	q.mu.Lock()
+	depth, dropped := len(q.items), q.dropped
+	q.mu.Unlock()
+	if depth != openclawQueueMaxDepth || dropped != overflow {
+		t.Fatalf("depth=%d dropped=%d, want depth=%d dropped=%d", depth, dropped, openclawQueueMaxDepth, overflow)
+	}
+	// Drop-oldest: the head must now be the first item that survived.
+	typed, ok := q.pop()
+	if !ok || typed.(int) != overflow {
+		t.Fatalf("head = %v (ok=%v), want %d", typed, ok, overflow)
+	}
+}
+
 func TestServeOpenClawPromptGate(t *testing.T) {
 	r := quietRunner()
 	r.OnPromptSubmitted(func(ctx context.Context, e *PromptEvent) (PromptDecision, error) {

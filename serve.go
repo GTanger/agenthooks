@@ -149,7 +149,11 @@ type openclawObserveQueue struct {
 	items   []any
 	closed  bool
 	dropped int
-	logger  *slog.Logger
+	// warnedDepth is the high-water backlog depth already logged, so a queue
+	// pinned at the cap (depth constant at a warn multiple) logs once, not on
+	// every push.
+	warnedDepth int
+	logger      *slog.Logger
 }
 
 const (
@@ -179,7 +183,8 @@ func (q *openclawObserveQueue) push(typed any) {
 		}
 	}
 	q.items = append(q.items, typed)
-	if len(q.items)%openclawQueueWarnDepth == 0 {
+	if len(q.items)%openclawQueueWarnDepth == 0 && len(q.items) > q.warnedDepth {
+		q.warnedDepth = len(q.items)
 		q.logger.Warn("agenthooks: observe queue backlog", "depth", len(q.items))
 	}
 	q.cond.Signal()
@@ -228,7 +233,10 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 	enc := json.NewEncoder(stdout)
 	st := newOpenclawServeState()
 
-	deadlineFor := func(pol Policy, frameTimeout int64) time.Duration {
+	// gateDeadline applies to gate frames only: observe frames have no shim
+	// deadline to respect (their reply is already sent), so the worker bounds
+	// them with the policy timeout or the default instead.
+	gateDeadline := func(pol Policy, frameTimeout int64) time.Duration {
 		// Gate frames carry the shim's per-hook deadline; without it a
 		// handler could keep burning long after the shim gave up. The serve
 		// invocation's --timeout (the max gate deadline) is the fallback.
@@ -263,7 +271,11 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 			}
 			base := eventOf(typed)
 			pol := r.policy(base)
-			hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol, 0))
+			deadline := pol.Timeout
+			if deadline == 0 {
+				deadline = defaultDeadline
+			}
+			hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
 			if _, err := r.dispatch(hctx, typed); err != nil {
 				r.logger.Error("agenthooks: handler failed", "hook", base.NativeName, "error", err)
 			}
@@ -322,7 +334,7 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 		}
 
 		pol := r.policy(base)
-		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadlineFor(pol, fr.TimeoutMS))
+		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), gateDeadline(pol, fr.TimeoutMS))
 		core, herr := r.dispatch(hctx, typed)
 		cancel()
 		if herr != nil {
