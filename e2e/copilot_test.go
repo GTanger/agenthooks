@@ -218,6 +218,13 @@ func TestCopilotToolFailure(t *testing.T) {
 	})
 	evs := rec.events(t)
 	requireKinds(t, evs, agenthooks.KindToolPre, agenthooks.KindToolError)
+	viewTools := make(map[string]bool)
+	for _, e := range typedToolPres(evs) {
+		if e.Canonical == string(agenthooks.ToolFileRead) {
+			viewTools[e.Tool] = true
+		}
+	}
+	matchedViewFailure := false
 	for _, e := range ofKind(evs, agenthooks.KindToolError) {
 		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.PostToolUseFailure(ev)
@@ -227,9 +234,15 @@ func TestCopilotToolFailure(t *testing.T) {
 		if in.Error == "" && in.ToolResult.TextResultForLM == "" {
 			t.Errorf("PostToolUseFailure carries no error text: %+v (raw: %s)", in, e.Raw)
 		}
+		if viewTools[in.ToolName] {
+			matchedViewFailure = true
+		}
 		if len(in.Extra) > 0 {
 			t.Errorf("PostToolUseFailure has unknown fields %v (raw: %s)", keys(in.Extra), e.Raw)
 		}
+	}
+	if !matchedViewFailure {
+		t.Errorf("no failed view tool call recorded; got:\n%s", summarize(evs))
 	}
 }
 

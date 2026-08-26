@@ -308,22 +308,24 @@ func requireNoBackfill(t *testing.T, evs []event) {
 	}
 }
 
+// toolFailurePrompt asks the agent to make one intentionally failing file-view call.
+func toolFailurePrompt() string {
+	return "Please use the view tool exactly once to open `no-such-agenthooks-fixture.txt`. " +
+		"The file intentionally does not exist. Do not use the shell, retry, or run any other tools."
+}
+
+// oneShotShellMarkerPrompt asks for exactly one shell call that creates markerName.
+func oneShotShellMarkerPrompt(markerName string) string {
+	return "Run the shell command `touch " + markerName + "` exactly once, then stop without " +
+		"checking the file or retrying the command, regardless of the result."
+}
+
 // shellMarkerPrompt instructs the agent to run one exact shell command that
 // creates markerName in the working directory. Used both for the allow path
 // (marker must exist) and the deny path (marker must not exist). The framing
 // matters: bare "create an arbitrary file" gets refused as not a real task,
 // and "this is an automated test" reads as prompt injection to some models
 // (z-ai/glm-5.2 flagged both) — a purposeful fixture request lands better.
-func toolFailurePrompt() string {
-	return "Please use the view tool exactly once to open `no-such-agenthooks-fixture.txt`. " +
-		"The file intentionally does not exist. Do not use the shell, retry, or run any other tools."
-}
-
-func oneShotShellMarkerPrompt(markerName string) string {
-	return "Run the shell command `touch " + markerName + "` exactly once, then stop without " +
-		"checking the file or retrying the command, regardless of the result."
-}
-
 func shellMarkerPrompt(markerName string) string {
 	return "Please set up a fixture for me: our test suite expects an empty placeholder file named " +
 		markerName + " in the current working directory. It must be created by the shell command `touch " +
