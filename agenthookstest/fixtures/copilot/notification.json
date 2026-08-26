@@ -1,0 +1,1 @@
+{"sessionId":"sess-copilot-1","timestamp":1786820594659,"cwd":"/work/repo","message":"Path permission needed: /work/repo/secrets.txt","title":"Permission needed","hook_event_name":"Notification","notification_type":"permission_prompt"}

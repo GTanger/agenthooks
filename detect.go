@@ -33,6 +33,7 @@ var validProviders = map[Provider]bool{
 	ProviderOpenCode:   true,
 	ProviderOpenClaw:   true,
 	ProviderKimi:       true,
+	ProviderCopilot:    true,
 }
 
 func parseArgs(args []string) (*invocation, error) {
@@ -126,6 +127,11 @@ func detectFromEnv() (Provider, bool) {
 	if os.Getenv("OPENCODE_SERVER") != "" || os.Getenv("OPENCODE") != "" {
 		return ProviderOpenCode, true
 	}
+	// Copilot cross-sets CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR into hook
+	// processes (observed on CLI 1.0.80), so it must be checked before Claude.
+	if os.Getenv("COPILOT_CLI") != "" || os.Getenv("COPILOT_PLUGIN_ROOT") != "" || os.Getenv("COPILOT_PLUGIN_DATA") != "" {
+		return ProviderCopilot, true
+	}
 	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
 	}
@@ -134,12 +140,14 @@ func detectFromEnv() (Provider, bool) {
 
 func detectFromShape(payload []byte) (Provider, bool) {
 	var probe struct {
-		HookEventName  string          `json:"hook_event_name"`
-		ConversationID string          `json:"conversation_id"`
-		TurnID         string          `json:"turn_id"`
-		ToolCallID     string          `json:"tool_call_id"`
-		Timestamp      string          `json:"timestamp"`
-		SessionID      string          `json:"session_id"`
+		HookEventName  string `json:"hook_event_name"`
+		ConversationID string `json:"conversation_id"`
+		TurnID         string `json:"turn_id"`
+		ToolCallID     string `json:"tool_call_id"`
+		// Raw, not string: Copilot ships an epoch-ms NUMBER here and a typed
+		// mismatch would fail the whole probe, not just this field.
+		Timestamp      json.RawMessage `json:"timestamp"`
+		SessionIDCamel string          `json:"sessionId"`
 		Seq            json.RawMessage `json:"seq"`
 		Hook           string          `json:"hook"`
 		Event          json.RawMessage `json:"event"`
@@ -150,15 +158,22 @@ func detectFromShape(payload []byte) (Provider, bool) {
 	switch {
 	// Both shim dialects frame as {seq, hook, ...}; OpenClaw carries the
 	// payload under "event" (+"ctx"), OpenCode under "input"/"output".
-	case probe.Hook != "" && len(probe.Seq) > 0 && len(probe.Event) > 0:
+	case probe.Hook != "" && jsonPresent(probe.Seq) && jsonPresent(probe.Event):
 		return ProviderOpenClaw, true
-	case probe.Hook != "" && len(probe.Seq) > 0:
+	case probe.Hook != "" && jsonPresent(probe.Seq):
 		return ProviderOpenCode, true
+	// Copilot is the only dialect keying the session on camelCase sessionId;
+	// its payloads carry no event-name field at all on most events, so this is
+	// the discriminator (verified against Copilot CLI 1.0.80).
+	case probe.SessionIDCamel != "":
+		return ProviderCopilot, true
 	case probe.ConversationID != "":
 		return ProviderCursor, true
 	case probe.HookEventName != "" && isCamel(probe.HookEventName):
 		return ProviderCursor, true
-	case geminiKinds[probe.HookEventName] != "" && (probe.Timestamp != "" || claudeKinds[probe.HookEventName] == ""):
+	// A JSON null decodes into RawMessage as the 4-byte literal, so presence
+	// is len>0 AND not null — otherwise `"timestamp": null` would read as set.
+	case geminiKinds[probe.HookEventName] != "" && (jsonPresent(probe.Timestamp) || claudeKinds[probe.HookEventName] == ""):
 		return ProviderGemini, true
 	case probe.TurnID != "":
 		return ProviderCodex, true
@@ -180,6 +195,14 @@ var kimiOnlyEvents = map[string]bool{
 	"PermissionResult": true,
 	"StopFailure":      true,
 	"Interrupt":        true,
+}
+
+// jsonPresent reports whether a probe field was set to something other than
+// null. Probe fields are json.RawMessage so a type mismatch cannot fail the
+// whole unmarshal, and that also means an explicit null arrives as a non-empty
+// 4-byte literal rather than as an absent field.
+func jsonPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
 }
 
 func isCamel(s string) bool {
