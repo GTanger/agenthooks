@@ -117,6 +117,17 @@ func TestRenderOpenClawPlugin(t *testing.T) {
 	if strings.Contains(strings.ReplaceAll(shim, "sanitizeCtx(hook, ctx)", ""), "call(hook, event, ctx") {
 		t.Error("every forwarded hook ctx must pass through sanitizeCtx")
 	}
+	// History-sized fields the daemon never reads must be stripped before
+	// they can hit the serve loop's frame cap.
+	if !strings.Contains(shim, "const { messages, ...rest } = event") {
+		t.Error("shim must strip event.messages on agent_end/before_agent_run")
+	}
+	if !strings.Contains(shim, "const { historyMessages, ...rest } = event") {
+		t.Error("shim must strip historyMessages on llm_input")
+	}
+	if !strings.Contains(shim, "const event = slimEvent(hook, rawEvent)") {
+		t.Error("every hook payload must pass through slimEvent")
+	}
 	// Package installs reject TypeScript entries; the shim must stay plain JS.
 	if strings.Contains(shim, ": ChildProcess") || strings.Contains(shim, "COMMAND: string[]") {
 		t.Error("shim must be plain JavaScript, not TypeScript")

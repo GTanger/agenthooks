@@ -2,8 +2,10 @@ package agenthooks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -136,6 +138,48 @@ func (r *Runner) serve(ctx context.Context, inv *invocation, stdin io.Reader, st
 	return 0
 }
 
+// errFrameTooLong marks an NDJSON line that exceeded maxPayloadBytes. The
+// serve loop discards the line and continues: killing the daemon over one
+// oversized frame would turn every later gate into a shim timeout (and a
+// local block under fail-closed shims).
+var errFrameTooLong = errors.New("agenthooks: frame exceeds maximum size")
+
+// readBoundedLine returns the next newline-terminated line up to max bytes.
+// An over-long line is drained through its newline and reported as
+// errFrameTooLong with a nil payload. Returns io.EOF with a nil payload at
+// end of stream (a final unterminated line is returned without error).
+func readBoundedLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(buf)+len(chunk) > maxBytes {
+			// Drain the rest of the oversized line. A genuine stream error
+			// during the drain must surface as itself: bufio.Reader hands out
+			// its stored error only once, so masking it as errFrameTooLong
+			// would make the caller continue on a broken stream.
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = r.ReadSlice('\n')
+			}
+			if err != nil {
+				return nil, err
+			}
+			return nil, errFrameTooLong
+		}
+		buf = append(buf, chunk...)
+		switch {
+		case err == nil:
+			return bytes.TrimSuffix(buf, []byte("\n")), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			if len(buf) > 0 {
+				return buf, nil
+			}
+			return nil, err
+		}
+	}
+}
+
 // openclawObserveQueue is the FIFO between the serve loop and the observe
 // worker. Its two constraints pull in opposite directions: a blocking bound
 // would let telemetry backpressure stall the loop and delay gate frames,
@@ -228,8 +272,7 @@ func (q *openclawObserveQueue) close() {
 // relative order on the worker; a gate may run before an earlier observe
 // handler finishes.
 func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Reader, stdout io.Writer) int {
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, 0, 64<<10), maxPayloadBytes)
+	br := bufio.NewReaderSize(stdin, 64<<10)
 	enc := json.NewEncoder(stdout)
 	st := newOpenclawServeState()
 
@@ -285,8 +328,19 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 	defer workers.Wait()
 	defer observe.close()
 
-	for sc.Scan() {
-		line := sc.Bytes()
+	for {
+		line, err := readBoundedLine(br, maxPayloadBytes)
+		if err != nil {
+			if errors.Is(err, errFrameTooLong) {
+				r.logger.Error("agenthooks: dropping oversized shim frame", "max_bytes", maxPayloadBytes)
+				continue
+			}
+			if !errors.Is(err, io.EOF) {
+				r.logger.Error("agenthooks: reading shim stream", "error", err)
+				return 1
+			}
+			break
+		}
 		if len(line) == 0 {
 			continue
 		}
@@ -353,10 +407,6 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 			r.logger.Error("agenthooks: writing reply", "error", err)
 			return 1
 		}
-	}
-	if err := sc.Err(); err != nil {
-		r.logger.Error("agenthooks: reading shim stream", "error", err)
-		return 1
 	}
 	return 0
 }
