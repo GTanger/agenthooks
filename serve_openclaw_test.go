@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -224,6 +225,34 @@ func TestServeOpenClawSurvivesOversizedFrame(t *testing.T) {
 	replies := parseReplies(t, out.String())
 	if len(replies) != 1 || replies[0].Output["blockReason"] != "still alive" {
 		t.Fatalf("gate after oversized frame must still decide: %+v", replies)
+	}
+}
+
+// errAfterReader yields data, then a terminal error (never io.EOF).
+type errAfterReader struct {
+	data []byte
+	err  error
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestReadBoundedLinePropagatesDrainError(t *testing.T) {
+	// An oversized line whose drain hits a real stream error must surface
+	// that error, not errFrameTooLong: bufio.Reader hands out its stored
+	// error once, so masking it would leave the caller looping on a broken
+	// stream.
+	streamErr := errors.New("connection reset")
+	r := bufio.NewReaderSize(&errAfterReader{data: bytes.Repeat([]byte("x"), 256<<10), err: streamErr}, 64<<10)
+	line, err := readBoundedLine(r, 128<<10)
+	if line != nil || !errors.Is(err, streamErr) {
+		t.Fatalf("got line=%v err=%v, want nil line and the stream error", line, err)
 	}
 }
 

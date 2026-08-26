@@ -153,9 +153,15 @@ func readBoundedLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 	for {
 		chunk, err := r.ReadSlice('\n')
 		if len(buf)+len(chunk) > maxBytes {
-			// Drain the rest of the oversized line.
+			// Drain the rest of the oversized line. A genuine stream error
+			// during the drain must surface as itself: bufio.Reader hands out
+			// its stored error only once, so masking it as errFrameTooLong
+			// would make the caller continue on a broken stream.
 			for errors.Is(err, bufio.ErrBufferFull) {
 				_, err = r.ReadSlice('\n')
+			}
+			if err != nil {
+				return nil, err
 			}
 			return nil, errFrameTooLong
 		}
