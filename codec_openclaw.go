@@ -205,7 +205,8 @@ func decodeOpenClawFrame(v Variant, conf DetectionConfidence, now time.Time, fr 
 			Prompt string `json:"prompt"`
 		}
 		_ = json.Unmarshal(fr.Event, &in)
-		return &PromptEvent{Event: base, Prompt: in.Prompt}, nil
+		prompt, inbound := stripOpenClawInboundMeta(in.Prompt)
+		return &PromptEvent{Event: base, Prompt: prompt, Inbound: inbound}, nil
 	case KindStop, KindSubagentStop:
 		var in struct {
 			RunID      string `json:"runId"`

@@ -648,7 +648,7 @@ OpenCode it arrives via the shim with `Raw` = the exact hook input JSON.
 
 OpenClaw's Gateway is the same in-process-plugin shape (typed `api.on` hooks,
 no spawned-process protocol), so it reuses the serve-mode bridge with its own
-dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#37):
+dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#38):
 
 - **A generated native plugin** (`openclaw.plugin.json` + `package.json` +
   plain-JS `index.js` — package installs reject TypeScript entries, and
@@ -674,6 +674,14 @@ dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#37):
   tool-scope frames (only conversation-scope contexts carry them) and to
   decode the `after_tool_call` of a just-denied call as `tool.error` rather
   than a successful completion.
+- **Inbound envelope stripping.** On channel-originated turns (Discord,
+  Slack, Telegram, …) OpenClaw prepends its AI-facing metadata envelope to
+  `before_agent_run.prompt` — timestamp prefix, delivery hints, and
+  `<Label> (untrusted…):` fenced-JSON blocks — and strips it in its own UIs
+  but not for plugins (quirk #38). The codec applies the same stripping so
+  `Prompt` is the human-authored text, and lifts the *Conversation info*
+  block (chat/message ids, channel, sender) onto `PromptEvent.Inbound`;
+  `Raw` keeps the envelope verbatim.
 
 Coverage caveat: conversation-scope hooks require
 `plugins.entries.<id>.hooks.allowConversationAccess: true`, and none of the
@@ -690,7 +698,7 @@ upstream reference. Seeded from provider research and production observation:
 
 The table below is the initially seeded set; `quirks.go` is the authoritative
 registry and has grown past it (entries #21+, including the OpenClaw rows
-#34–#37).
+#34–#38).
 
 | # | Quirk | Mitigation |
 |---|---|---|

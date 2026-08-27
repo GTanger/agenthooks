@@ -361,6 +361,34 @@ type MCPInventoryEvent struct {
 type PromptEvent struct {
 	Event
 	Prompt string
+	// Inbound is the channel envelope a chat-bridged provider prepended to
+	// the prompt (OpenClaw's "Conversation info" block on Discord/Slack/
+	// Telegram turns), lifted out of Prompt by the codec. Nil for CLI and
+	// webchat turns and for providers without one; Raw keeps the envelope.
+	Inbound *InboundContext
+}
+
+// InboundContext identifies the chat, message, and sender a channel-originated
+// prompt came from. Fields holds the whole decoded block, including keys not
+// lifted onto the struct.
+type InboundContext struct {
+	ChatID            string
+	MessageID         string
+	ConversationLabel string
+	Channel           string // group_channel, e.g. "#general"
+	Space             string // group_space: the guild/workspace id
+	Sender            *InboundSender
+	IsGroupChat       bool
+	WasMentioned      bool
+	Fields            map[string]any
+}
+
+// InboundSender is the channel-scoped identity of the person who sent the
+// prompt; none of these is an org email.
+type InboundSender struct {
+	ID       string
+	Name     string
+	Username string
 }
 
 type ToolPreEvent struct {

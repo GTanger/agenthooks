@@ -177,4 +177,8 @@ var quirkRegistry = []Quirk{
 		Behavior:   "after_tool_call still fires for a call the plugin just blocked, carrying the block text as the tool result — indistinguishable from success by shape",
 		Mitigation: "the serve loop tracks denied toolCallIds per connection and decodes the blocked sibling as tool.error (Failed=true, Error \"blocked: <reason>\")",
 		Reference:  "verified against openclaw 2026.6.34"},
+	{ID: 38, Provider: ProviderOpenClaw, Versions: "observed 2026.6.34", Event: KindPromptSubmitted,
+		Behavior:   "channel-originated turns (Discord/Slack/Telegram/…) arrive with OpenClaw's AI-facing metadata envelope prepended to before_agent_run.prompt — a timestamp prefix, delivery hints, and \"<Label> (untrusted…):\" fenced-JSON blocks (Conversation info with chat/message/sender ids, reply targets, chat history) that OpenClaw strips from its own UIs but hands to plugins verbatim",
+		Mitigation: "the codec strips the envelope from Prompt the way strip-inbound-meta.ts does and lifts the Conversation info block onto PromptEvent.Inbound; Raw retains the full text",
+		Reference:  "verified against openclaw 2026.6.34 (inbound-meta.ts / strip-inbound-meta.ts)"},
 }
