@@ -388,12 +388,24 @@ func (r *Runner) serveOpenClaw(ctx context.Context, inv *invocation, stdin io.Re
 		}
 
 		pol := r.policy(base)
-		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), gateDeadline(pol, fr.TimeoutMS))
+		deadline := gateDeadline(pol, fr.TimeoutMS)
+		hctx, cancel := context.WithTimeout(withLogger(ctx, r.logger), deadline)
+		started := time.Now()
 		core, herr := r.dispatch(hctx, typed)
+		elapsed := time.Since(started)
 		cancel()
 		if herr != nil {
 			r.logger.Error("agenthooks: handler failed", "hook", fr.Hook, "error", herr)
 			core = failCore(pol, base)
+		}
+		// Gate latency is the number that decides whether real deployments
+		// live inside the shim's wall; surface it before it becomes a timeout.
+		if elapsed > deadline*4/5 {
+			r.logger.Warn("agenthooks: gate ran close to its deadline",
+				"hook", fr.Hook, "elapsed_ms", elapsed.Milliseconds(), "deadline_ms", deadline.Milliseconds())
+		} else {
+			r.logger.Debug("agenthooks: gate dispatched",
+				"hook", fr.Hook, "elapsed_ms", elapsed.Milliseconds(), "deadline_ms", deadline.Milliseconds())
 		}
 		core = r.applyPolicy(typed, base, core, pol)
 

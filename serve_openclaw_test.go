@@ -273,3 +273,36 @@ func TestServeOpenClawPromptGate(t *testing.T) {
 		t.Errorf("prompt gate reply wrong: %+v", replies)
 	}
 }
+
+func TestServeOpenClawShimGateTimeoutFlipsSibling(t *testing.T) {
+	// A shim-side fail-close (gate_timeout frame) must make the sibling
+	// after_tool_call dispatch as tool.error, same as a daemon-side deny.
+	r := quietRunner()
+	var failed []string
+	r.OnToolError(func(ctx context.Context, e *ToolPostEvent) (ToolPostDecision, error) {
+		failed = append(failed, e.Error)
+		return ToolPostDecision{}, nil
+	})
+
+	var post map[string]any
+	if err := json.Unmarshal(fixture(t, "openclaw/after_tool_call.json"), &post); err != nil {
+		t.Fatal(err)
+	}
+	event, _ := post["event"].(map[string]any)
+	toolCallID, _ := event["toolCallId"].(string)
+	if toolCallID == "" {
+		t.Fatal("fixture lacks toolCallId")
+	}
+	gateTimeout := `{"seq":1,"hook":"gate_timeout","event":{"toolCallId":"` + toolCallID + `","reason":"shim fail-closed"}}`
+	lines := gateTimeout + "\n" + strings.TrimSpace(string(fixture(t, "openclaw/after_tool_call.json"))) + "\n"
+
+	var out, errb bytes.Buffer
+	code := r.Run(context.Background(), []string{"agenthooks", "serve", "--provider=openclaw"},
+		strings.NewReader(lines), &out, &errb)
+	if code != 0 {
+		t.Fatalf("serve exit %d, stderr: %s", code, errb.String())
+	}
+	if len(failed) != 1 || !strings.Contains(failed[0], "shim fail-closed") {
+		t.Fatalf("shim-timed-out call must dispatch as tool.error with the shim's reason: %v", failed)
+	}
+}
