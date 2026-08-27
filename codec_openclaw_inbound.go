@@ -44,56 +44,57 @@ var (
 
 // stripOpenClawInboundMeta returns the prompt without OpenClaw's inbound
 // metadata envelope, plus the decoded "Conversation info" block when one was
-// present. Text with no envelope is returned unchanged (whitespace included)
-// apart from the leading timestamp prefix. One deliberate departure from
-// OpenClaw's stripper: a metadata fence that never closes is kept as text
-// rather than swallowing the rest of the prompt.
+// present. Only the leading run of envelope elements is removed (plus the
+// trailing untrusted-context suffix), so a sentinel-shaped block inside the
+// human text is preserved; text with no envelope is returned unchanged
+// (whitespace included) apart from the leading timestamp prefix. One
+// deliberate departure from OpenClaw's stripper: a metadata fence that never
+// closes is kept as text rather than swallowing the rest of the prompt.
 func stripOpenClawInboundMeta(text string) (string, *InboundContext) {
 	text = openclawLeadingTimestampRE.ReplaceAllString(text, "")
 	if !openclawHasSentinel(text) {
 		return text, nil
 	}
 	lines := openclawStripActiveMemoryBlocks(strings.Split(text, "\n"))
-	var (
-		out  []string
-		meta *InboundContext
-	)
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		if openclawStripsTrailingContext(lines, i) {
-			break
-		}
-		if openclawDeliveryHints[trimmed] {
-			continue
-		}
-		if openclawChatWindowHeaderRE.MatchString(trimmed) {
-			i = openclawSkipParagraph(lines, i) - 1
-			continue
-		}
-		if !openclawMetaSentinelRE.MatchString(trimmed) {
-			out = append(out, line)
-			continue
-		}
-		end := openclawFenceEnd(lines, i)
-		if end < 0 {
-			if trimmed == openclawChatHistorySentinel {
-				i = openclawSkipParagraph(lines, i) - 1
+	var meta *InboundContext
+	i := 0
+	for i < len(lines) {
+		trimmed := strings.TrimSpace(lines[i])
+		switch {
+		case trimmed == "" || openclawDeliveryHints[trimmed]:
+			i++
+		case openclawChatWindowHeaderRE.MatchString(trimmed):
+			i = openclawSkipParagraph(lines, i)
+		case openclawMetaSentinelRE.MatchString(trimmed):
+			end := openclawFenceEnd(lines, i)
+			if end < 0 {
+				if trimmed != openclawChatHistorySentinel {
+					return openclawJoinBody(lines[i:]), meta
+				}
+				i = openclawSkipParagraph(lines, i)
 				continue
 			}
-			out = append(out, line)
-			continue
-		}
-		if trimmed == openclawConversationInfoSentinel && meta == nil {
-			meta = parseOpenClawConversationInfo(strings.Join(lines[i+2:end], "\n"))
-		}
-		i = end
-		for i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
-			i++
+			if trimmed == openclawConversationInfoSentinel && meta == nil {
+				meta = parseOpenClawConversationInfo(strings.Join(lines[i+2:end], "\n"))
+			}
+			i = end + 1
+		default:
+			return openclawJoinBody(lines[i:]), meta
 		}
 	}
-	joined := strings.Trim(strings.Join(out, "\n"), "\n")
-	return openclawLeadingTimestampRE.ReplaceAllString(joined, ""), meta
+	return "", meta
+}
+
+// openclawJoinBody re-joins the human-authored lines, dropping the trailing
+// untrusted-context suffix and the blank lines around it.
+func openclawJoinBody(lines []string) string {
+	for i := range lines {
+		if openclawStripsTrailingContext(lines, i) {
+			lines = lines[:i]
+			break
+		}
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
 }
 
 func openclawHasSentinel(text string) bool {
@@ -202,13 +203,22 @@ func parseOpenClawConversationInfo(jsonText string) *InboundContext {
 
 func restoreOpenClawFences(m map[string]any) {
 	for k, v := range m {
-		switch t := v.(type) {
-		case string:
-			m[k] = strings.ReplaceAll(t, openclawNeutralizedFence, "```")
-		case map[string]any:
-			restoreOpenClawFences(t)
+		m[k] = restoreOpenClawFenceValue(v)
+	}
+}
+
+func restoreOpenClawFenceValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return strings.ReplaceAll(t, openclawNeutralizedFence, "```")
+	case map[string]any:
+		restoreOpenClawFences(t)
+	case []any:
+		for i, item := range t {
+			t[i] = restoreOpenClawFenceValue(item)
 		}
 	}
+	return v
 }
 
 func stringField(m map[string]any, key string) string {

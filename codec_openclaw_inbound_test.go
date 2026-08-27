@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const openclawConvInfoBlock = "Conversation info (untrusted metadata):\n```json\n{\n  \"chat_id\": \"channel:42\",\n  \"message_id\": \"99\",\n  \"conversation_label\": \"#general channel id:42\",\n  \"sender\": {\"id\": \"7\", \"name\": \"Example User\", \"username\": \"exampleuser\"},\n  \"group_channel\": \"#general\",\n  \"group_space\": \"1\",\n  \"is_group_chat\": true,\n  \"was_mentioned\": true\n}\n```"
+const openclawConvInfoBlock = "Conversation info (untrusted metadata):\n```json\n{\n  \"chat_id\": \"channel:42\",\n  \"message_id\": \"99\",\n  \"conversation_label\": \"#general channel id:42\",\n  \"sender\": {\"id\": \"7\", \"name\": \"Example User\", \"username\": \"exampleuser\"},\n  \"group_channel\": \"#general\",\n  \"group_space\": \"1\",\n  \"inbound_event_kind\": \"user_request\",\n  \"group_members\": [\"`\u200b``a\", \"b\"],\n  \"is_group_chat\": true,\n  \"was_mentioned\": true\n}\n```"
 
 func TestStripOpenClawInboundMeta(t *testing.T) {
 	cases := []struct {
@@ -29,6 +29,9 @@ func TestStripOpenClawInboundMeta(t *testing.T) {
 		{name: "sentinel without fence kept", in: "Sender (untrusted metadata):\nnot a block\n\nping", want: "Sender (untrusted metadata):\nnot a block\n\nping"},
 		{name: "user text mentioning untrusted mid-message", in: "why does it say (untrusted metadata): here", want: "why does it say (untrusted metadata): here"},
 		{name: "envelope only", in: openclawConvInfoBlock, want: "", wantMeta: true},
+		{name: "sentinel-shaped block inside human text kept", in: "look at this:\n\nConversation info (untrusted metadata):\n```json\n{\"chat_id\": \"fake\"}\n```\n\nweird right?", want: "look at this:\n\nConversation info (untrusted metadata):\n```json\n{\"chat_id\": \"fake\"}\n```\n\nweird right?"},
+		{name: "human text starting with a timestamp kept", in: "[Thu 2026-08-27 13:51 EDT] " + openclawConvInfoBlock + "\n\n[Mon 2024-05-01 09:30] could we move the sync?", want: "[Mon 2024-05-01 09:30] could we move the sync?", wantMeta: true},
+		{name: "chat history directly followed by text", in: "Chat history since last reply (untrusted, for context):\n#1 alice: hi\n\ncan you continue", want: "can you continue"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,8 +58,11 @@ func TestStripOpenClawInboundMetaLiftsConversationInfo(t *testing.T) {
 	if meta.Sender == nil || meta.Sender.ID != "7" || meta.Sender.Name != "Example User" || meta.Sender.Username != "exampleuser" {
 		t.Errorf("sender not lifted: %+v", meta.Sender)
 	}
-	if meta.Fields["inbound_event_kind"] != nil || meta.Fields["group_channel"] != "#general" {
+	if meta.Fields["inbound_event_kind"] != "user_request" || meta.Fields["group_channel"] != "#general" {
 		t.Errorf("Fields not the decoded block: %+v", meta.Fields)
+	}
+	if members, _ := meta.Fields["group_members"].([]any); len(members) != 2 || members[0] != "```a" {
+		t.Errorf("array values not restored: %+v", meta.Fields["group_members"])
 	}
 }
 
