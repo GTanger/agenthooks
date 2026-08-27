@@ -55,7 +55,7 @@ func stripOpenClawInboundMeta(text string) (string, *InboundContext) {
 	if !openclawHasSentinel(text) {
 		return text, nil
 	}
-	lines := openclawStripActiveMemoryBlocks(strings.Split(text, "\n"))
+	lines := strings.Split(text, "\n")
 	var meta *InboundContext
 	i := 0
 	for i < len(lines) {
@@ -63,6 +63,12 @@ func stripOpenClawInboundMeta(text string) (string, *InboundContext) {
 		switch {
 		case trimmed == "" || openclawDeliveryHints[trimmed]:
 			i++
+		case trimmed == openclawUntrustedContextHeader:
+			end := openclawActiveMemoryEnd(lines, i)
+			if end < 0 {
+				return openclawJoinBody(lines[i:]), meta
+			}
+			i = end + 1
 		case openclawChatWindowHeaderRE.MatchString(trimmed):
 			i = openclawSkipParagraph(lines, i)
 		case openclawMetaSentinelRE.MatchString(trimmed):
@@ -145,30 +151,19 @@ func openclawStripsTrailingContext(lines []string, i int) bool {
 	return openclawUntrustedSuffixRE.MatchString(strings.Join(lines[i+1:end], "\n"))
 }
 
-// openclawStripActiveMemoryBlocks drops the active-memory plugin's injected
-// <active_memory_plugin> prefix block (and the blank lines after it).
-func openclawStripActiveMemoryBlocks(lines []string) []string {
-	out := make([]string, 0, len(lines))
-	for i := 0; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == openclawUntrustedContextHeader && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == openclawActiveMemoryOpenTag {
-			closeIdx := -1
-			for j := i + 2; j < len(lines); j++ {
-				if strings.TrimSpace(lines[j]) == openclawActiveMemoryCloseTag {
-					closeIdx = j
-					break
-				}
-			}
-			if closeIdx >= 0 {
-				i = closeIdx
-				for i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "" {
-					i++
-				}
-				continue
-			}
-		}
-		out = append(out, lines[i])
+// openclawActiveMemoryEnd returns the index of the </active_memory_plugin>
+// line closing the active-memory plugin's injected block that opens under
+// the untrusted-context header at i, or -1 when no such block starts there.
+func openclawActiveMemoryEnd(lines []string, i int) int {
+	if i+1 >= len(lines) || strings.TrimSpace(lines[i+1]) != openclawActiveMemoryOpenTag {
+		return -1
 	}
-	return out
+	for j := i + 2; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == openclawActiveMemoryCloseTag {
+			return j
+		}
+	}
+	return -1
 }
 
 // parseOpenClawConversationInfo decodes the fenced JSON of a Conversation
