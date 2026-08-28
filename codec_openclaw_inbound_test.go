@@ -93,8 +93,11 @@ func TestDecodeOpenClawChannelPrompt(t *testing.T) {
 	if !ok {
 		t.Fatalf("decoded %T, want *PromptEvent", typed)
 	}
-	if !strings.HasPrefix(pe.Prompt, "@Bot what does this command do") || strings.Contains(pe.Prompt, "untrusted") {
-		t.Errorf("envelope not stripped: %q", pe.Prompt)
+	if !strings.HasPrefix(pe.Prompt, "Conversation info (untrusted metadata):") {
+		t.Errorf("Prompt must stay verbatim: %q", pe.Prompt)
+	}
+	if got := StripOpenClawInboundMetadata(pe.Prompt); !strings.HasPrefix(got, "@Bot what does this command do") || strings.Contains(got, "untrusted") {
+		t.Errorf("envelope not stripped: %q", got)
 	}
 	if pe.Inbound == nil || pe.Inbound.ChatID != "channel:42" || pe.Inbound.Sender == nil || pe.Inbound.Sender.Username != "exampleuser" || pe.Inbound.Channel != "#general" {
 		t.Errorf("inbound context not lifted: %+v", pe.Inbound)

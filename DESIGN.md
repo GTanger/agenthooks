@@ -674,14 +674,15 @@ dialect (payloads verified against OpenClaw 2026.6.34; quirks #34–#38):
   tool-scope frames (only conversation-scope contexts carry them) and to
   decode the `after_tool_call` of a just-denied call as `tool.error` rather
   than a successful completion.
-- **Inbound envelope stripping.** On channel-originated turns (Discord,
-  Slack, Telegram, …) OpenClaw prepends its AI-facing metadata envelope to
+- **Inbound envelope.** On channel-originated turns (Discord, Slack,
+  Telegram, …) OpenClaw prepends its AI-facing metadata envelope to
   `before_agent_run.prompt` — timestamp prefix, delivery hints, and
   `<Label> (untrusted…):` fenced-JSON blocks — and strips it in its own UIs
-  but not for plugins (quirk #38). The codec applies the same stripping so
-  `Prompt` is the human-authored text, and lifts the *Conversation info*
-  block (chat/message ids, channel, sender) onto `PromptEvent.Inbound`;
-  `Raw` keeps the envelope verbatim.
+  but not for plugins (quirk #38). The codec lifts the *Conversation info*
+  block (chat/message ids, channel, sender) onto `PromptEvent.Inbound` and
+  leaves `Prompt` verbatim, so a consumer stores exactly what the model saw;
+  `StripOpenClawInboundMetadata` applies OpenClaw's own stripping for
+  display or gating on the human-authored text.
 
 Coverage caveat: conversation-scope hooks require
 `plugins.entries.<id>.hooks.allowConversationAccess: true`, and none of the

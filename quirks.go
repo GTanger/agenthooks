@@ -179,6 +179,6 @@ var quirkRegistry = []Quirk{
 		Reference:  "verified against openclaw 2026.6.34"},
 	{ID: 38, Provider: ProviderOpenClaw, Versions: "observed 2026.6.34", Event: KindPromptSubmitted,
 		Behavior:   "channel-originated turns (Discord/Slack/Telegram/…) arrive with OpenClaw's AI-facing metadata envelope prepended to before_agent_run.prompt — a timestamp prefix, delivery hints, and \"<Label> (untrusted…):\" fenced-JSON blocks (Conversation info with chat/message/sender ids, reply targets, chat history) that OpenClaw strips from its own UIs but hands to plugins verbatim",
-		Mitigation: "the codec strips the envelope from Prompt the way strip-inbound-meta.ts does and lifts the Conversation info block onto PromptEvent.Inbound; Raw retains the full text",
+		Mitigation: "the codec lifts the Conversation info block onto PromptEvent.Inbound and leaves Prompt verbatim (what the model saw is what a consumer stores); StripOpenClawInboundMetadata removes the envelope the way strip-inbound-meta.ts does for display or gating",
 		Reference:  "verified against openclaw 2026.6.34 (inbound-meta.ts / strip-inbound-meta.ts)"},
 }

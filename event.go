@@ -363,8 +363,10 @@ type PromptEvent struct {
 	Prompt string
 	// Inbound is the channel envelope a chat-bridged provider prepended to
 	// the prompt (OpenClaw's "Conversation info" block on Discord/Slack/
-	// Telegram turns), lifted out of Prompt by the codec. Nil for CLI and
-	// webchat turns and for providers without one; Raw keeps the envelope.
+	// Telegram turns), parsed by the codec. Prompt is left verbatim so a
+	// consumer stores exactly what the model saw; StripOpenClawInboundMetadata
+	// yields the human-authored text for display or gating. Nil for CLI and
+	// webchat turns and for providers without one.
 	Inbound *InboundContext
 }
 

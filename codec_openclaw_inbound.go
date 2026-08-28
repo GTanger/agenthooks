@@ -42,6 +42,16 @@ var (
 	openclawSentinelFastMarkers = []string{"(untrusted", "Delivery: ", openclawUntrustedContextHeader}
 )
 
+// StripOpenClawInboundMetadata returns the human-authored text of an
+// OpenClaw prompt: the inbound metadata envelope the Gateway prepends to
+// channel-originated turns is removed the way OpenClaw's own UIs remove it.
+// The codec leaves PromptEvent.Prompt verbatim; consumers that render or
+// gate on the user's words call this.
+func StripOpenClawInboundMetadata(text string) string {
+	clean, _ := stripOpenClawInboundMeta(text)
+	return clean
+}
+
 // stripOpenClawInboundMeta returns the prompt without OpenClaw's inbound
 // metadata envelope, plus the decoded "Conversation info" block when one was
 // present. Only the leading run of envelope elements is removed (plus the
