@@ -14,6 +14,8 @@ func TestStripOpenClawInboundMeta(t *testing.T) {
 	}{
 		{name: "plain prompt untouched", in: "  ls -la\n", want: "  ls -la\n"},
 		{name: "timestamp prefix only", in: "[Thu 2026-08-27 13:51 EDT] hello", want: "hello"},
+		{name: "timestamp with seconds and offset zone", in: "[Thu 2026-08-27 13:51:33 GMT+5:30] hello", want: "hello"},
+		{name: "human bracket without a zone kept", in: "[Mon 2024-05-01 09:30] can we move the sync?", want: "[Mon 2024-05-01 09:30] can we move the sync?"},
 		{name: "conversation info", in: openclawConvInfoBlock + "\n\n@Bot what does this command do", want: "@Bot what does this command do", wantMeta: true},
 		{name: "timestamp then block", in: "[Thu 2026-08-27 13:51 EDT] " + openclawConvInfoBlock + "\n\nhi", want: "hi", wantMeta: true},
 		{name: "multiple blocks incl. ones OpenClaw's list misses",

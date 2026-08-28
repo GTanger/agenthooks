@@ -31,7 +31,10 @@ var openclawDeliveryHints = map[string]bool{
 }
 
 var (
-	openclawLeadingTimestampRE = regexp.MustCompile(`^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] *`)
+	// injectTimestamp stamps every turn as "[DOW YYYY-MM-DD HH:MM[:SS] TZ] "
+	// with a short zone name (EDT, UTC, GMT+5:30); a human line that opens
+	// with a date-time bracket but no zone is not the stamp.
+	openclawLeadingTimestampRE = regexp.MustCompile(`^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? [A-Z]{1,5}(?:[+-]\d{1,2}(?::\d{2})?)?\] *`)
 	// Every block formatUntrustedJsonBlock emits is "<Label> (untrusted…):"
 	// over a ```json fence, so the label shape is matched rather than the
 	// fixed sentinel list OpenClaw's own stripper keeps (which misses the
