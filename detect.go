@@ -34,6 +34,10 @@ var validProviders = map[Provider]bool{
 	ProviderOpenClaw:   true,
 	ProviderKimi:       true,
 	ProviderCopilot:    true,
+	// VS Code ships no provider env marker and no field Claude Code doesn't
+	// also send, so this one is reachable by the generated --provider flag
+	// only: neither detectFromEnv nor detectFromShape can produce it.
+	ProviderVSCodeCopilot: true,
 }
 
 func parseArgs(args []string) (*invocation, error) {

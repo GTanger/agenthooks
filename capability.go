@@ -102,6 +102,30 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindSubagentStop: caps(CapContinueAgent),
 		KindSessionStart: caps(CapAddContext),
 	},
+	ProviderVSCodeCopilot: {
+		// Verified against the extension source, not the docs, which contradict
+		// themselves on placement. PreToolUse is the only event whose decision
+		// rides hookSpecificOutput; PostToolUse and UserPromptSubmit block via
+		// TOP-LEVEL decision/reason; Stop/SubagentStop block via NESTED
+		// decision/reason (encodeVSCode moves them). SessionStart/SubagentStart
+		// are processed with ignoreErrors and drop stopReason silently, so no
+		// CapStopAgent there. No CapReplaceOutput anywhere: updatedToolOutput is
+		// a Claude extension VS Code does not read. No CapAsk outside ToolPre.
+		// permission.request, session.end, tool.error and notification are
+		// absent: VS Code never fires them.
+		//
+		// CompactPre is the one inferred row: PreCompact is a real HookType but
+		// no consumer callsite was read, so its two capabilities come from the
+		// generic _toHookResult path every hook type goes through.
+		KindToolPre:         caps(CapDeny, CapAsk, CapAllow, CapUpdateInput, CapAddContext, CapSystemMessage, CapStopAgent),
+		KindToolPost:        caps(CapAddContext, CapSystemMessage, CapStopAgent),
+		KindPromptSubmitted: caps(CapDeny, CapAddContext, CapSystemMessage, CapStopAgent),
+		KindSessionStart:    caps(CapAddContext, CapSystemMessage),
+		KindSubagentStart:   caps(CapAddContext, CapSystemMessage),
+		KindStop:            caps(CapContinueAgent, CapSystemMessage, CapStopAgent),
+		KindSubagentStop:    caps(CapContinueAgent, CapSystemMessage, CapStopAgent),
+		KindCompactPre:      caps(CapSystemMessage, CapStopAgent),
+	},
 	ProviderKimi: {
 		// Only UserPromptSubmit, PreToolUse and Stop are blockable; JSON
 		// output understands deny|allow only — no ask, no updatedInput, no

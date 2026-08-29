@@ -97,6 +97,8 @@ func Render(m Manifest, t Target) (fs.FS, error) {
 		return renderKimi(m, t)
 	case agenthooks.ProviderCopilot:
 		return renderCopilot(m, t)
+	case agenthooks.ProviderVSCodeCopilot:
+		return renderVSCode(m, t)
 	}
 	return nil, fmt.Errorf("install: unknown provider %q", t.Provider)
 }

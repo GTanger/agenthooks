@@ -492,3 +492,101 @@ func TestRenderCopilotScopes(t *testing.T) {
 		t.Error("plugin scope with no Identity.Name must fail, not emit a nameless package")
 	}
 }
+
+// TestRenderVSCodeScopes pins the two paths and the basename. Both directories
+// are globbed by VS Code AND by the Copilot CLI, so the basename is the only
+// thing keeping this file from colliding with render_copilot.go's — and
+// agenthooks-vscode.json is neither settings.json nor hooks.json, so the file
+// stays whole-file owned instead of being merged into.
+func TestRenderVSCodeScopes(t *testing.T) {
+	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRendered(t, proj, ".github/hooks/agenthooks-vscode.json")
+
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readRendered(t, user, "hooks/agenthooks-vscode.json") // Target.Dir is ~/.copilot
+	if isMergeableJSON("hooks/agenthooks-vscode.json") {
+		t.Error("agenthooks-vscode.json must not be merge-eligible; a merge would fold it into the CLI's config")
+	}
+
+	if _, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopePlugin}); err == nil {
+		t.Error("plugin scope must fail: VS Code loads plugin hooks through ~/.copilot, which user scope already covers")
+	}
+
+	// PascalCase event keys, one per declared kind. A camelCase key here would
+	// still resolve in VS Code (it accepts the CLI's names) but would pick up
+	// the CLI's event vocabulary, where Stop is spelled agentStop.
+	var cfg struct {
+		Hooks map[string][]struct {
+			Type       string `json:"type"`
+			Command    string `json:"command"`
+			Timeout    int    `json:"timeout"`
+			TimeoutSec int    `json:"timeoutSec"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"PreToolUse", "Stop", "PostToolUse"} {
+		if len(cfg.Hooks[event]) != 1 {
+			t.Fatalf("%s not registered: %v", event, cfg.Hooks)
+		}
+	}
+	if len(cfg.Hooks) != 3 {
+		t.Errorf("hooks = %v, want one entry per declared kind", cfg.Hooks)
+	}
+	pre := cfg.Hooks["PreToolUse"][0]
+	if pre.Type != "command" {
+		t.Errorf("type = %q, want command", pre.Type)
+	}
+	if !strings.Contains(pre.Command, "agenthooks run --provider=vscode-copilot") {
+		t.Errorf("command wrong: %q", pre.Command)
+	}
+	// VS Code parses matcher values and ignores them, so --filter is the only
+	// enforcement that is actually true.
+	if !strings.Contains(pre.Command, "--filter=") {
+		t.Errorf("no --filter in %q; VS Code ignores matchers, so a scoped hook would fire on every tool", pre.Command)
+	}
+}
+
+// TestRenderVSCodeOmissions pins the keys whose wrong presence or absence fails
+// silently rather than loudly: a matcher that reads as enforcement VS Code does
+// not perform, a version key no VS Code example carries (an unknown key is a
+// schema-validation risk), bash/powershell keys VS Code does not understand at
+// all (its split is windows/linux/osx), and the two unreconciled timeout
+// spellings — the reference table says timeout, a usage example says
+// timeoutSec, and reading the missing one silently means the 30s default.
+func TestRenderVSCodeOmissions(t *testing.T) {
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readRendered(t, fsys, ".github/hooks/agenthooks-vscode.json")
+	for _, key := range []string{`"matcher"`, `"version"`, `"bash"`, `"powershell"`, `"windows"`, `"osx"`} {
+		if bytes.Contains(raw, []byte(key)) {
+			t.Errorf("%s key present:\n%s", key, raw)
+		}
+	}
+	var cfg struct {
+		Hooks map[string][]struct {
+			Timeout    *int `json:"timeout"`
+			TimeoutSec *int `json:"timeoutSec"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	pre := cfg.Hooks["PreToolUse"][0]
+	if pre.Timeout == nil || pre.TimeoutSec == nil || *pre.Timeout != 30 || *pre.TimeoutSec != 30 {
+		t.Errorf("both timeout spellings must carry the same value, got timeout=%v timeoutSec=%v", pre.Timeout, pre.TimeoutSec)
+	}
+	stop := cfg.Hooks["Stop"][0]
+	if stop.Timeout == nil || *stop.Timeout != 60 {
+		t.Errorf("Stop timeout = %v, want the 60s default", stop.Timeout)
+	}
+}

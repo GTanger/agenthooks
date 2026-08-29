@@ -21,7 +21,10 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenClaw   Provider = "openclaw"  // OpenClaw Gateway (typed plugin hooks via shim)
 	ProviderKimi       Provider = "kimi-code" // Kimi Code CLI ("kimi" accepted as a flag alias)
-	ProviderCopilot    Provider = "copilot"   // GitHub Copilot CLI (hooks are CLI-only)
+	// Copilot ships two dialects behind one product name, so a consumer
+	// switching on "is this Copilot?" must consider both constants.
+	ProviderCopilot       Provider = "copilot"        // GitHub Copilot CLI (camelCase dialect)
+	ProviderVSCodeCopilot Provider = "vscode-copilot" // Copilot Chat in VS Code (Claude-shaped dialect)
 )
 
 // Variant refines Provider where runtime behavior genuinely differs.

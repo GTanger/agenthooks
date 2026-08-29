@@ -92,6 +92,21 @@ func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []
 	return typed, nil
 }
 
+// decodeClaudeAs decodes a Claude-shaped payload under a different provider
+// label. VS Code Copilot Chat and the Copilot CLI's PascalCase compat mode
+// both ship the Claude wire shape verbatim; only the response schema differs,
+// and that is selected downstream by Provider.
+func decodeClaudeAs(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+	typed, err := decodeClaude(v, conf, now, payload)
+	if err != nil {
+		return nil, err
+	}
+	if b := eventOf(typed); b != nil {
+		b.Provider = p
+	}
+	return typed, nil
+}
+
 // buildClaudeShaped constructs typed events from the Claude-shaped wire form.
 // Codex deliberately ships the same shapes, so its decoder reuses this.
 func buildClaudeShaped(base Event, in *claudeIn) any {
