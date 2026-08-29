@@ -47,6 +47,42 @@ func TestCanonicalToolFor(t *testing.T) {
 		"mcp__gh__issues":   ToolMCP,
 		"MCP:issues":        ToolMCP,
 		"SomethingCustom":   ToolOther,
+
+		// VS Code Copilot Chat. run_in_terminal and replace_string_in_file were
+		// observed in a live capture session; the rest come from the
+		// extension's wire-name table. Before these landed they all classified
+		// as ToolOther, so a deny-shell policy silently did not cover any of
+		// VS Code's execution tools and a ToolTask matcher saw no subagent.
+		"run_in_terminal":        ToolShell,
+		"send_to_terminal":       ToolShell,
+		"create_and_run_task":    ToolShell,
+		"run_task":               ToolShell,
+		"runTests":               ToolShell,
+		"run_notebook_cell":      ToolShell,
+		"run_playwright_code":    ToolShell,
+		"replace_string_in_file": ToolFileEdit,
+		"edit_notebook_file":     ToolFileEdit,
+		"semantic_search":        ToolSearch,
+		"github_text_search":     ToolSearch,
+		"fetch_webpage":          ToolFetch,
+		"runSubagent":            ToolTask,
+		"execution_subagent":     ToolTask,
+
+		// The browser suite splits: these pull external content in...
+		"open_browser_page": ToolFetch,
+		"navigate_page":     ToolFetch,
+		"read_page":         ToolFetch,
+		"screenshot_page":   ToolFetch,
+		// ...while these only manipulate an already-open page.
+		"click_element": ToolOther,
+		"type_in_page":  ToolOther,
+
+		// Deliberately ToolOther — no execution of their own. Pinned so a
+		// future "classify everything terminal-ish as shell" sweep has to
+		// argue with a test rather than silently widen an allow-shell policy.
+		"get_terminal_output": ToolOther,
+		"kill_terminal":       ToolOther,
+		"run_vscode_command":  ToolOther,
 	}
 	for name, want := range cases {
 		if got := CanonicalToolFor(name); got != want {
