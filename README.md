@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, and GitHub Copilot CLI.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -210,9 +210,20 @@ config, and an absent one already means match-all.
   ambiguous or unrecoverable matches stay empty.
   Disable with `WithoutMCPResolution()` (everything) or
   `WithoutMCPListFallback()` (provider CLI probes).
-- Copilot hooks are **CLI-only** (the IDE surfaces fire nothing) and the
-  dialect needs the most repair: most payloads omit their own event name, so
-  the codec reconstructs it from the payload shape — the shapes are disjoint,
+- Copilot ships **two dialects behind one name**: the CLI's camelCase wire
+  (`copilot`) and Copilot Chat in VS Code, which speaks the Claude-shaped
+  dialect (`vscode-copilot`). Both runtimes glob the same two hook
+  directories, so the `vscode-copilot` file serves both — its PascalCase
+  event keys are the CLI's Claude-compat mode, and the CLI's own `COPILOT_*`
+  env demotes the session to `copilot` before decode, so each runtime gets
+  its own capability row and response schema (VS Code nested, the CLI flat).
+  Install `vscode-copilot` for both runtimes (8 events) or `copilot` for the
+  CLI's full 14; installing both double-fires in the CLI. Cross-runtime
+  registration is verified against Copilot CLI 1.0.81 for the five events a
+  headless turn can drive; `SubagentStart`, `SubagentStop` and `PreCompact`
+  are unmeasured there.
+- The CLI dialect needs the most repair: most payloads omit their own event
+  name, so the codec reconstructs it from the shape — the shapes are disjoint,
   so this is exact. `toolArgs` is a JSON-encoded *string* on
   `pre`/`postToolUse` while `permissionRequest` ships a plain object in
   `toolInput`; both normalize to an object. No tool-call id ships at all, so
