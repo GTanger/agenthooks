@@ -375,3 +375,109 @@ func TestCopilotDetection(t *testing.T) {
 		t.Errorf("shape detection = %q", p)
 	}
 }
+
+// A --provider=copilot registration receives the Claude-shaped snake_case
+// payload from two directions — the CLI running the PascalCase compat file
+// this library installs for VS Code, and VS Code discovering a camelCase CLI
+// file, because both runtimes glob both hook directories. copilotEventName has
+// no camelCase shape to reconstruct from there, so before the fallthrough
+// every one of these landed on KindOther with the tool fields empty: hooks
+// that look installed and healthy while reporting nothing useful.
+func TestCopilotClaudeShapedFallthrough(t *testing.T) {
+	for _, tc := range []struct {
+		fixture, native string
+		kind            EventKind
+	}{
+		{"claude/pre_tool_use.json", "PreToolUse", KindToolPre},
+		{"claude/user_prompt_submit.json", "UserPromptSubmit", KindPromptSubmitted},
+		{"claude/post_tool_use.json", "PostToolUse", KindToolPost},
+		{"claude/session_start.json", "SessionStart", KindSessionStart},
+		{"claude/stop.json", "Stop", KindStop},
+	} {
+		typed, err := decodeCopilot(VariantUnknown, DetectionConfig, testNow, fixture(t, tc.fixture))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.fixture, err)
+		}
+		ev := eventOf(typed)
+		if ev.NativeName != tc.native || ev.Kind != tc.kind {
+			t.Errorf("%s decoded as native=%q kind=%q, want %q/%q", tc.fixture, ev.NativeName, ev.Kind, tc.native, tc.kind)
+		}
+		// The label must stay ProviderCopilot: it is what selects the CLI's
+		// flat response schema downstream. decodeClaude hardcodes
+		// claude-code, so the relabel in decodeClaudeAs is load-bearing.
+		if ev.Provider != ProviderCopilot {
+			t.Errorf("%s provider = %q, want %q", tc.fixture, ev.Provider, ProviderCopilot)
+		}
+		if ev.Session.ID != "sess-claude-1" {
+			t.Errorf("%s session id = %q", tc.fixture, ev.Session.ID)
+		}
+	}
+
+	// The bug this fixes, stated as the assertion: tool arguments survive.
+	typed, err := decodeCopilot(VariantUnknown, DetectionConfig, testNow, fixture(t, "claude/pre_tool_use.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, ok := typed.(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPreEvent", typed)
+	}
+	if pre.Tool.Name != "Bash" || pre.Tool.Canonical != ToolShell {
+		t.Errorf("tool = %+v; the whole point of the fallthrough is that these are populated", pre.Tool)
+	}
+
+	// The camelCase corpus must be untouched. copilot/notification.json is the
+	// trap: it is the one native Copilot event that ships hook_event_name, so
+	// only the sessionId half of the discriminator keeps it on this path.
+	for name, want := range map[string]string{
+		"copilot/notification.json":  "notification",
+		"copilot/pre_tool_use.json":  "preToolUse",
+		"copilot/agent_stop.json":    "agentStop",
+		"copilot/session_start.json": "sessionStart",
+	} {
+		typed, err := decodeCopilot(VariantUnknown, DetectionConfig, testNow, fixture(t, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if ev := eventOf(typed); ev.NativeName != want {
+			t.Errorf("%s decoded as native=%q, want %q; the fallthrough stole a camelCase payload", name, ev.NativeName, want)
+		}
+	}
+}
+
+// End to end for the shared file: ONE installed agenthooks-vscode.json, run by
+// both runtimes. The Copilot CLI's own env demotes the --provider flag, and
+// everything downstream follows from the provider constant — so the same
+// PascalCase input produces the CLI's FLAT body here and VS Code's nested one
+// without it. A deny answered in the wrong placement is accepted and ignored
+// by either runtime, which is why this is asserted rather than reasoned about.
+func TestCopilotPascalCaseSharedFile(t *testing.T) {
+	vscodeArgs := []string{"agenthooks", "run", "--provider=vscode-copilot"}
+	denier := func() *Runner {
+		r := quietRunner()
+		r.OnToolPre(func(ctx context.Context, e *ToolPreEvent) (ToolPreDecision, error) {
+			return Deny("blocked by policy"), nil
+		})
+		return r
+	}
+
+	t.Setenv("COPILOT_CLI", "1")
+	out, code := runWith(t, denier(), vscodeArgs, fixture(t, "claude/pre_tool_use.json"))
+	if out != `{"permissionDecision":"deny","permissionDecisionReason":"blocked by policy"}` || code != 0 {
+		t.Errorf("CLI session = %q (exit %d), want copilot's flat deny at exit 0", out, code)
+	}
+
+	t.Setenv("COPILOT_CLI", "")
+	out, code = runWith(t, denier(), vscodeArgs, fixture(t, "claude/pre_tool_use.json"))
+	var body struct {
+		HSO struct {
+			PermissionDecision string `json:"permissionDecision"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &body); err != nil {
+		t.Fatalf("VS Code session stdout %q: %v", out, err)
+	}
+	if body.HSO.PermissionDecision != "deny" || code != 0 {
+		t.Errorf("VS Code session = %q (exit %d), want a nested deny at exit 0", out, code)
+	}
+}

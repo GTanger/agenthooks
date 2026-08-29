@@ -152,6 +152,20 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 	if err := json.Unmarshal(payload, &in); err != nil {
 		return nil, err
 	}
+	// Claude-shaped fallthrough. A --provider=copilot registration can receive
+	// the snake_case Claude wire shape from two directions: the CLI running the
+	// PascalCase compat file this library installs for VS Code, and VS Code
+	// discovering a camelCase CLI file (both runtimes glob both hook
+	// directories). copilotEventName has no camelCase shape to reconstruct from
+	// there, so without this the event lands on KindOther with the tool fields
+	// lost. The discriminator is an explicit event name with no camelCase
+	// sessionId — every genuine Copilot payload keys the session on sessionId,
+	// including the one native event (notification) that also ships
+	// hook_event_name. The label stays ProviderCopilot so encodeCopilot still
+	// answers in the CLI's flat schema.
+	if in.HookEventName != "" && in.SessionID == "" {
+		return decodeClaudeAs(ProviderCopilot, v, conf, now, payload)
+	}
 	native := copilotEventName(&in)
 	kind, ok := copilotKinds[native]
 	if !ok {

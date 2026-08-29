@@ -35,3 +35,31 @@ func TestParseArgsNoSentinel(t *testing.T) {
 		t.Errorf("provider = %q, want %q", inv.provider, ProviderClaudeCode)
 	}
 }
+
+// One installed file, two runtimes. --provider=vscode-copilot is the default
+// the Copilot CLI overrides with its own env; VS Code sets no marker, so its
+// absence is the only signal available and it has to mean "leave the flag
+// alone". Getting this backwards sends a whole runtime the wrong response
+// schema, silently — both runtimes accept and ignore the other's body.
+func TestDemoteVSCodeToCLI(t *testing.T) {
+	// No COPILOT_* set: a VS Code session, flag obeyed.
+	for _, v := range []string{"COPILOT_CLI", "COPILOT_PLUGIN_ROOT", "COPILOT_PLUGIN_DATA"} {
+		t.Setenv(v, "")
+	}
+	if got := demoteVSCodeToCLI(ProviderVSCodeCopilot); got != ProviderVSCodeCopilot {
+		t.Errorf("no COPILOT_* → %q, want %q", got, ProviderVSCodeCopilot)
+	}
+
+	t.Setenv("COPILOT_PLUGIN_ROOT", "/tmp/plugin")
+	if got := demoteVSCodeToCLI(ProviderVSCodeCopilot); got != ProviderCopilot {
+		t.Errorf("COPILOT_PLUGIN_ROOT set → %q, want %q", got, ProviderCopilot)
+	}
+	// Every other provider is untouched: Claude Code hooks run inside a
+	// Copilot CLI session under CLAUDE_* compat vars, and demoting those would
+	// hijack a provider that never shared the file.
+	for _, p := range []Provider{ProviderClaudeCode, ProviderCopilot, ProviderCursor, ""} {
+		if got := demoteVSCodeToCLI(p); got != p {
+			t.Errorf("demote(%q) = %q, want unchanged", p, got)
+		}
+	}
+}

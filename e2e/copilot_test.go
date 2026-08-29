@@ -356,3 +356,89 @@ func TestCopilotDeny(t *testing.T) {
 		}
 	}
 }
+
+// TestCopilotPascalCaseCompat drives the file rendered for VS Code
+// (agenthooks-vscode.json, PascalCase event keys) with the real Copilot CLI.
+// VS Code and the CLI glob the same two hook directories, so this file is
+// loaded by both whether we like it or not — the design bets that the CLI's
+// documented Claude-compat mode makes that harmless. Three things only the
+// real binary can witness:
+//
+//  1. WHICH of VS Code's eight PascalCase names the CLI actually registers.
+//     The CLI docs confirm the mode for PreToolUse and never enumerate the
+//     rest; UserPromptSubmit is the suspect one, since the CLI's native name
+//     is userPromptSubmitted. An unregistered name is silent — the hook
+//     simply never fires — so the recorded kinds are the answer. The t.Logf
+//     below is the output to read.
+//  2. The COPILOT_* demotion fires in a real CLI hook child. Every event must
+//     be stamped copilot, not vscode-copilot: the flag says vscode-copilot
+//     and only the CLI's own env overrides it.
+//  3. The CLI honors a decision returned for a PascalCase registration, in
+//     the FLAT schema encodeCopilot emits. A body in VS Code's nested
+//     placement would be accepted and ignored, so a passing deny is the only
+//     proof the demotion picked the right encoder.
+func TestCopilotPascalCaseCompat(t *testing.T) {
+	t.Parallel()
+	requireE2E(t, "copilot")
+
+	rec, proj := runToolTurn(t, func() (recorder, string) {
+		rec := newRecorder(t, "")
+		home := copilotHome(t)
+		proj := t.TempDir()
+		installHooks(t, rec, agenthooks.ProviderVSCodeCopilot, install.ScopeUser, home)
+		runCopilot(t, proj, home, shellMarkerPrompt("pascal-marker.txt"))
+		return rec, proj
+	})
+	evs := rec.events(t)
+	// sessionEnd and postToolUseFailure are deliberately absent: they have no
+	// VS Code counterpart, so kindToVSCode never renders them and the CLI
+	// cannot fire what was never registered. That is the documented cost of
+	// the PascalCase file versus the camelCase one.
+	requireKinds(t, evs,
+		agenthooks.KindSessionStart,
+		agenthooks.KindPromptSubmitted,
+		agenthooks.KindToolPre,
+		agenthooks.KindToolPost,
+		agenthooks.KindStop,
+	)
+	registered := map[string]bool{}
+	for _, e := range evs {
+		if e.Native != "" {
+			registered[e.Native] = true
+		}
+	}
+	t.Logf("PascalCase names the Copilot CLI registered: %v", keys(registered))
+	if !markerExists(proj, "pascal-marker.txt") {
+		t.Error("marker missing: shell command did not run under the PascalCase file")
+	}
+	for _, e := range evs {
+		if e.Provider != string(agenthooks.ProviderCopilot) {
+			t.Errorf("event %s stamped provider %q, want %q — the COPILOT_* demotion did not fire, so this session got VS Code's capability row and nested encoder", e.Native, e.Provider, agenthooks.ProviderCopilot)
+		}
+	}
+
+	// Second turn, denying: a nested body would be silently ignored here.
+	denyRec, denyProj := runToolTurn(t, func() (recorder, string) {
+		rec := newRecorder(t, string(agenthooks.ToolShell))
+		home := copilotHome(t)
+		proj := t.TempDir()
+		installHooks(t, rec, agenthooks.ProviderVSCodeCopilot, install.ScopeUser, home)
+		runCopilot(t, proj, home, shellMarkerPrompt("pascal-denied-marker.txt"))
+		return rec, proj
+	})
+	denyEvs := denyRec.events(t)
+	requireKinds(t, denyEvs, agenthooks.KindToolPre)
+	deniedShell := false
+	for _, e := range typedToolPres(denyEvs) {
+		if e.Canonical == string(agenthooks.ToolShell) && e.Denied {
+			deniedShell = true
+			break
+		}
+	}
+	if !deniedShell {
+		t.Errorf("no denied shell tool.pre recorded; got:\n%s", summarize(denyEvs))
+	}
+	if markerExists(denyProj, "pascal-denied-marker.txt") {
+		t.Error("marker exists: the flat deny was not honored for a PascalCase registration")
+	}
+}

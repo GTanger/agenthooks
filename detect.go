@@ -133,13 +133,44 @@ func detectFromEnv() (Provider, bool) {
 	}
 	// Copilot cross-sets CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR into hook
 	// processes (observed on CLI 1.0.80), so it must be checked before Claude.
-	if os.Getenv("COPILOT_CLI") != "" || os.Getenv("COPILOT_PLUGIN_ROOT") != "" || os.Getenv("COPILOT_PLUGIN_DATA") != "" {
+	if copilotCLIEnv() {
 		return ProviderCopilot, true
 	}
 	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
 	}
 	return "", false
+}
+
+// copilotCLIEnv reports whether the Copilot CLI spawned this process. These
+// are the CLI's own variables, not ones agenthooks injects; VS Code Copilot
+// Chat sets no marker at all, which is what makes their absence meaningful in
+// demoteVSCodeToCLI.
+func copilotCLIEnv() bool {
+	return os.Getenv("COPILOT_CLI") != "" || os.Getenv("COPILOT_PLUGIN_ROOT") != "" || os.Getenv("COPILOT_PLUGIN_DATA") != ""
+}
+
+// demoteVSCodeToCLI resolves which of the two runtimes that read the SAME hook
+// file is actually running us, and is the one place a --provider flag is
+// overridden rather than obeyed.
+//
+// VS Code Copilot Chat and the Copilot CLI glob the same two directories
+// (~/.copilot/hooks, .github/hooks), so every file install writes is loaded by
+// both. PascalCase event keys make the INPUT identical — that is the CLI's
+// documented Claude-compat mode — but the CLI reads decisions from a FLAT body
+// while VS Code reads them from a nested hookSpecificOutput. The CLI is the
+// only one of the pair that marks its hook processes, so its env is the
+// discriminator and --provider=vscode-copilot is the default it overrides.
+//
+// Resolving the runtime here, before decode, means each session gets the
+// already-correct capability row and encoder with no branch downstream:
+// decodeCopilot's Claude-shaped fallthrough handles the snake_case payload and
+// encodeCopilot answers flat.
+func demoteVSCodeToCLI(p Provider) Provider {
+	if p == ProviderVSCodeCopilot && copilotCLIEnv() {
+		return ProviderCopilot
+	}
+	return p
 }
 
 func detectFromShape(payload []byte) (Provider, bool) {
