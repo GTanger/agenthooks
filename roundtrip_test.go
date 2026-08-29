@@ -24,6 +24,7 @@ func TestRoundTripNoOpAndRawFidelity(t *testing.T) {
 		agenthooks.ProviderOpenCode,
 		agenthooks.ProviderKimi,
 		agenthooks.ProviderCopilot,
+		agenthooks.ProviderVSCodeCopilot,
 	}
 	quiet := agenthooks.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, p := range providers {

@@ -84,8 +84,8 @@ func TestCapabilityDivergences(t *testing.T) {
 
 func TestQuirkRegistry(t *testing.T) {
 	qs := Quirks()
-	if len(qs) != 47 {
-		t.Fatalf("expected the 47 seeded quirks, got %d", len(qs))
+	if len(qs) != 48 {
+		t.Fatalf("expected the 48 seeded quirks, got %d", len(qs))
 	}
 	seen := map[int]bool{}
 	for _, q := range qs {

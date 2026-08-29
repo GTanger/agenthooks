@@ -22,16 +22,39 @@ func vscodeDecode(t *testing.T, name string) any {
 	return typed
 }
 
-// The Claude corpus IS the VS Code wire shape — same snake_case fields, same
-// PascalCase event names — so it doubles as a compatibility assertion that the
-// two dialects have not drifted apart. Phase 4 adds the recorded VS Code
-// payloads as ground truth; until then these are the only real payloads with
-// this shape, and they are recordings rather than docs-derived guesses.
+// TestVSCodeDecodesRecordedCorpus is the ground-truth pass: these payloads were
+// recorded from a live VS Code Copilot Chat agent turn (see the Phase 4 capture
+// runbook), not hand-authored from docs the research found self-contradictory.
+//
+// What they confirmed, beyond decoding: the field set matches claudeIn's tags
+// exactly, transcript_path and source are both populated, and tool_use_id ships
+// — so unlike the Copilot CLI, VS Code needs no ID synthesis. SessionStart's
+// source is "new" where Claude Code says "startup"; Source is passed through as
+// provider-specific vocabulary and nothing switches on it, so that is a
+// recorded divergence rather than a bug.
+func TestVSCodeDecodesRecordedCorpus(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("agenthookstest", "fixtures", "vscode", "*.json"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("vscode corpus: %v (%d files)", err, len(paths))
+	}
+	assertVSCodeDecodes(t, paths)
+}
+
+// TestVSCodeDecodesClaudeCorpus is a drift assertion, not a stand-in: the
+// Claude corpus IS the VS Code wire shape — same snake_case fields, same
+// PascalCase event names — and the recorded corpus above proved it. It stays so
+// that a future divergence in either dialect fails here, and because it covers
+// the five VS Code events the three recorded fixtures do not.
 func TestVSCodeDecodesClaudeCorpus(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("agenthookstest", "fixtures", "claude", "*.json"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("claude corpus: %v (%d files)", err, len(paths))
 	}
+	assertVSCodeDecodes(t, paths)
+}
+
+func assertVSCodeDecodes(t *testing.T, paths []string) {
+	t.Helper()
 	for _, p := range paths {
 		name := filepath.Base(p)
 		t.Run(name, func(t *testing.T) {
@@ -77,7 +100,7 @@ func TestVSCodeDecodesClaudeCorpus(t *testing.T) {
 // makes _toHookResult strip the whole hookSpecificOutput.
 func TestVSCodeStopDecisionIsNested(t *testing.T) {
 	for _, tc := range []struct{ fixture, native string }{
-		{"claude/stop.json", "Stop"},
+		{"vscode/stop.json", "Stop"},
 		{"claude/subagent_stop.json", "SubagentStop"},
 	} {
 		typed := vscodeDecode(t, tc.fixture)
@@ -144,9 +167,9 @@ func TestVSCodeHookEventNameNeverTopLevel(t *testing.T) {
 		fixture string
 		core    decisionCore
 	}{
-		{"claude/pre_tool_use.json", decisionCore{kind: DecisionDeny, reason: "blocked by policy"}},
-		{"claude/stop.json", decisionCore{kind: DecisionContinue, instruction: "keep going"}},
-		{"claude/session_start.json", decisionCore{kind: DecisionContinueSession, context: []string{"repo is frozen"}}},
+		{"vscode/pre_tool_use.json", decisionCore{kind: DecisionDeny, reason: "blocked by policy"}},
+		{"vscode/stop.json", decisionCore{kind: DecisionContinue, instruction: "keep going"}},
+		{"vscode/session_start.json", decisionCore{kind: DecisionContinueSession, context: []string{"repo is frozen"}}},
 	} {
 		base := eventOf(vscodeDecode(t, tc.fixture))
 		wire, err := encodeVSCode(base, tc.core)
@@ -198,7 +221,7 @@ func TestVSCodeDegradesUnsupportedDecisions(t *testing.T) {
 		}
 		return Finish(), nil
 	})
-	if out, code := runWith(t, stop, vscodeArgs(), fixture(t, "claude/stop.json")); out != "{}" || code != 0 {
+	if out, code := runWith(t, stop, vscodeArgs(), fixture(t, "vscode/stop.json")); out != "{}" || code != 0 {
 		t.Errorf("finish on agent.stop = %q (exit %d), want {} at exit 0", out, code)
 	}
 
@@ -237,5 +260,13 @@ func TestVSCodeDetection(t *testing.T) {
 	}
 	if p, ok := detectFromShape(fixture(t, "claude/pre_tool_use.json")); !ok || p != ProviderClaudeCode {
 		t.Errorf("shape detection = %q; a VS Code branch here would steal real Claude Code sessions", p)
+	}
+	// The same assertion against a RECORDED VS Code payload, which is the half
+	// that could not be proven before the capture session: a real VS Code
+	// payload is genuinely indistinguishable from Claude Code by shape, so the
+	// --provider flag is not merely the chosen mechanism, it is the only one
+	// available. A config without the flag degrades to claude-code.
+	if p, ok := detectFromShape(fixture(t, "vscode/pre_tool_use.json")); !ok || p != ProviderClaudeCode {
+		t.Errorf("recorded VS Code payload shape-detects as %q, want claude-code: if it were distinguishable, flag-only detection would be a choice rather than a constraint", p)
 	}
 }

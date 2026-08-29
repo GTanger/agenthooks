@@ -224,4 +224,8 @@ var quirkRegistry = []Quirk{
 		Behavior:   "hooks stop firing mid-session: userPromptSubmitted/agentStop fire at session init and no further event arrives",
 		Mitigation: "none in-library (open upstream); a session that goes silent after the first turn is this, not a misconfiguration",
 		Reference:  "microsoft/vscode#300193"},
+	{ID: 48, Provider: ProviderVSCodeCopilot, Versions: "VS Code 1.135 / Copilot Chat 0.63", Event: KindToolPre, Capability: CapDeny,
+		Behavior:   "tool names on the wire are NOT the names the extension registers: package.json declares copilot_readFile/copilot_replaceString, while a hook receives read_file/replace_string_in_file from a separate wire-name table, and the terminal tools are not in package.json at all. Auditing tool names from the obvious source maps the wrong strings entirely",
+		Mitigation: "canonicalNames carries the wire names, enumerated from the extension's own table and pinned by TestCanonicalToolFor. Until it did, every VS Code tool classified as ToolOther, so a deny-shell policy silently did not cover run_in_terminal and a ToolTask matcher saw no subagent",
+		Reference:  "observed live 2026-08-29: a capture session ran 'echo hello' straight through a deny that should have blocked it"},
 }
