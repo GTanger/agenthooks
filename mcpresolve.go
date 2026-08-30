@@ -627,9 +627,9 @@ func openCodeMCPEntries(servers map[string]opencodeMCPJSON) []mcpConfigEntry {
 	return out
 }
 
-// stripJSONCComments blanks // and /* */ comments (string-aware) so the
-// stdlib JSON decoder accepts .jsonc config files. Byte positions are
-// preserved by replacing comment bytes with spaces.
+// stripJSONCComments blanks // and /* */ comments plus trailing commas
+// (string-aware) so the stdlib JSON decoder accepts .jsonc config files. Byte
+// positions are preserved by replacing removed syntax with spaces.
 func stripJSONCComments(data []byte) []byte {
 	out := make([]byte, len(data))
 	copy(out, data)
@@ -668,6 +668,32 @@ func stripJSONCComments(data []byte) []byte {
 			out[i], out[i+1] = ' ', ' '
 			i++
 			inBlock = true
+		}
+	}
+
+	// JSONC permits a comma before a closing object or array delimiter. Comments
+	// are spaces now, so a second string-aware pass can inspect the next
+	// non-whitespace byte without needing to understand comment boundaries.
+	inStr = false
+	for i := 0; i < len(out); i++ {
+		switch out[i] {
+		case '\\':
+			if inStr {
+				i++
+			}
+		case '"':
+			inStr = !inStr
+		case ',':
+			if inStr {
+				continue
+			}
+			j := i + 1
+			for j < len(out) && (out[j] == ' ' || out[j] == '\t' || out[j] == '\r' || out[j] == '\n') {
+				j++
+			}
+			if j < len(out) && (out[j] == '}' || out[j] == ']') {
+				out[i] = ' '
+			}
 		}
 	}
 	return out

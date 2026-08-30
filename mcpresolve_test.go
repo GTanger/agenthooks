@@ -1069,8 +1069,13 @@ func TestResolveMCPVSCode(t *testing.T) {
 	isolateHome(t)
 	cwd := t.TempDir()
 	writeConfig(t, filepath.Join(cwd, ".vscode", "mcp.json"), `{
-		// VS Code uses a servers block and permits JSONC.
-		"servers": {"github": {"type": "http", "url": "https://example.test/vscode"}}
+		// VS Code uses a servers block and permits JSONC comments and trailing commas.
+		"servers": {
+			"github": {
+				"type": "http",
+				"url": "https://example.test/vscode",
+			},
+		},
 	}`)
 	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
 		"mcpServers": {"My Long Server Name!!!": {"url": "https://example.test/root"}}
