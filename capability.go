@@ -111,17 +111,19 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		// are processed with ignoreErrors and drop stopReason silently, so no
 		// CapStopAgent there. No CapReplaceOutput anywhere: updatedToolOutput is
 		// a Claude extension VS Code does not read. No CapAsk outside ToolPre.
-		// PostToolUse feedback is absent too: live verification found both nested
-		// additionalContext and top-level decision/reason are accepted but ignored,
-		// so it has no CapAddContext. permission.request, session.end, tool.error
-		// and notification are absent: VS Code never fires them.
+		// PostToolUse CapAddContext is contract-level: VS Code 1.135 accepts it
+		// and appends it to the tool result, but its panel path starts that async
+		// work without awaiting it (quirk #49). Keep the capability so the same
+		// documented payload works once the upstream race is fixed.
+		// permission.request, session.end, tool.error and notification are absent:
+		// VS Code never fires them.
 		//
 		// SubagentStart and CompactPre are observe-only in the public runner,
 		// so their upstream output channels are not capabilities here. Stop and
 		// SubagentStop cannot advertise CapStopAgent because StopDecision has no
 		// operation that sets it.
 		KindToolPre:         caps(CapDeny, CapAsk, CapAllow, CapUpdateInput, CapAddContext, CapSystemMessage, CapStopAgent),
-		KindToolPost:        caps(CapSystemMessage, CapStopAgent),
+		KindToolPost:        caps(CapAddContext, CapSystemMessage, CapStopAgent),
 		KindPromptSubmitted: caps(CapDeny, CapAddContext, CapSystemMessage, CapStopAgent),
 		KindSessionStart:    caps(CapAddContext, CapSystemMessage),
 		KindStop:            caps(CapContinueAgent, CapSystemMessage),

@@ -189,6 +189,30 @@ func TestVSCodeBlockStaysTopLevel(t *testing.T) {
 	}
 }
 
+// PostToolUse context keeps the documented nested shape. VS Code 1.135 parses
+// this correctly but can race its async append to the next model request
+// (quirk #49); changing the wire shape cannot fix that upstream race.
+func TestVSCodePostToolContextUsesDocumentedShape(t *testing.T) {
+	base := eventOf(vscodeDecode(t, "claude/post_tool_use.json"))
+	wire, err := encodeVSCode(base, decisionCore{kind: DecisionObserved, context: []string{"lint passed"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Decision string `json:"decision"`
+		HSO      struct {
+			AdditionalContext string `json:"additionalContext"`
+			HookEventName     string `json:"hookEventName"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(wire.Stdout, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "" || out.HSO.AdditionalContext != "lint passed" || out.HSO.HookEventName != "PostToolUse" {
+		t.Fatalf("PostToolUse context shape changed: %s", wire.Stdout)
+	}
+}
+
 // A TOP-LEVEL hookEventName makes _toHookResult discard the ENTIRE result when
 // it mismatches, so the library never emits one; the name lives inside
 // hookSpecificOutput only, stamped from the VS Code event name.
@@ -229,27 +253,21 @@ func TestVSCodeHookEventNameNeverTopLevel(t *testing.T) {
 // than Claude Code's in both directions, and each narrowing below is a place a
 // handler would otherwise believe it had an effect it does not have.
 func TestVSCodeDegradesUnsupportedDecisions(t *testing.T) {
-	// tool.post has neither CapReplaceOutput nor CapAddContext:
-	// updatedToolOutput is a Claude extension VS Code does not read, while live
-	// verification found both of VS Code's apparent feedback placements are
-	// accepted but ignored before the next model turn.
+	// tool.post has no CapReplaceOutput: updatedToolOutput is a Claude
+	// extension VS Code does not read. Its documented CapAddContext remains even
+	// though VS Code 1.135 can race the async append (quirk #49).
 	post := quietRunner()
 	post.OnToolPost(func(ctx context.Context, e *ToolPostEvent) (ToolPostDecision, error) {
-		if e.Can(CapReplaceOutput) || e.Can(CapAddContext) {
-			t.Error("vscode tool.post must report neither CapReplaceOutput nor CapAddContext")
+		if e.Can(CapReplaceOutput) {
+			t.Error("vscode tool.post must not report CapReplaceOutput")
+		}
+		if !e.Can(CapAddContext) {
+			t.Error("vscode tool.post must retain its documented CapAddContext")
 		}
 		return ReplaceOutput("scrubbed"), nil
 	})
 	if out, code := runWith(t, post, vscodeArgs(), fixture(t, "claude/post_tool_use.json")); out != "{}" || code != 0 {
 		t.Errorf("replace-output on tool.post = %q (exit %d), want {} at exit 0", out, code)
-	}
-
-	contextPost := quietRunner()
-	contextPost.OnToolPost(func(context.Context, *ToolPostEvent) (ToolPostDecision, error) {
-		return Observed().WithContext("ignored upstream"), nil
-	})
-	if out, code := runWith(t, contextPost, vscodeArgs(), fixture(t, "claude/post_tool_use.json")); out != "{}" || code != 0 {
-		t.Errorf("context on tool.post = %q (exit %d), want {} at exit 0", out, code)
 	}
 
 	// agent.stop takes a continuation and nothing else: no ask, no context.

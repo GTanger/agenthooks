@@ -229,7 +229,7 @@ var quirkRegistry = []Quirk{
 		Mitigation: "canonicalNames carries the wire names, enumerated from the extension's own table and pinned by TestCanonicalToolFor. Until it did, every VS Code tool classified as ToolOther, so a deny-shell policy silently did not cover run_in_terminal and a ToolTask matcher saw no subagent",
 		Reference:  "observed live 2026-08-29: a capture session ran 'echo hello' straight through a deny that should have blocked it"},
 	{ID: 49, Provider: ProviderVSCodeCopilot, Versions: "VS Code 1.135 / Copilot Chat 0.63", Event: KindToolPost, Capability: CapAddContext,
-		Behavior:   "PostToolUse command-hook feedback is silently ignored: nested hookSpecificOutput.additionalContext and top-level decision:block/reason are both logged as successful hook output but neither reaches the next model turn",
-		Mitigation: "the capability row omits CapAddContext so FlagOutput and WithContext degrade honestly instead of claiming feedback was delivered",
-		Reference:  "observed live 2026-08-30 in two isolated sessions, one per response placement; the transcript contained neither marker nor hook instruction in model reasoning"},
+		Behavior:   "PostToolUse context and block feedback are documented and parsed, but the panel path calls the async appendHookContext helper without await, so the next model request can be assembled before either reaches the tool result",
+		Mitigation: "retain the documented response shape and capability so it works once the upstream await fix lands; on affected versions treat immediate model feedback as best-effort and verify the outgoing model request rather than response text",
+		Reference:  "VS Code 1.135 toolCalling.tsx:334-345,600-649; microsoft/vscode#314118 and fix PR #331785; reproduced live 2026-08-30 with both response placements"},
 }
