@@ -228,4 +228,8 @@ var quirkRegistry = []Quirk{
 		Behavior:   "tool names on the wire are NOT the names the extension registers: package.json declares copilot_readFile/copilot_replaceString, while a hook receives read_file/replace_string_in_file from a separate wire-name table, and the terminal tools are not in package.json at all. Auditing tool names from the obvious source maps the wrong strings entirely",
 		Mitigation: "canonicalNames carries the wire names, enumerated from the extension's own table and pinned by TestCanonicalToolFor. Until it did, every VS Code tool classified as ToolOther, so a deny-shell policy silently did not cover run_in_terminal and a ToolTask matcher saw no subagent",
 		Reference:  "observed live 2026-08-29: a capture session ran 'echo hello' straight through a deny that should have blocked it"},
+	{ID: 49, Provider: ProviderVSCodeCopilot, Versions: "VS Code 1.135 / Copilot Chat 0.63", Event: KindToolPost, Capability: CapAddContext,
+		Behavior:   "PostToolUse command-hook feedback is silently ignored: nested hookSpecificOutput.additionalContext and top-level decision:block/reason are both logged as successful hook output but neither reaches the next model turn",
+		Mitigation: "the capability row omits CapAddContext so FlagOutput and WithContext degrade honestly instead of claiming feedback was delivered",
+		Reference:  "observed live 2026-08-30 in two isolated sessions, one per response placement; the transcript contained neither marker nor hook instruction in model reasoning"},
 }

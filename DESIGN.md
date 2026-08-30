@@ -56,7 +56,7 @@ from Claude Code and are fixed up in `encodeVSCode`: `decision`/`reason` ride
 honors `additionalContext`, which Claude Code does not. The capability row was
 read out of the extension source rather than the reference, which contradicts
 itself on both the nesting and the timeout key — see quirk registry entries
-#42–#48.)
+#42–#49.)
 
 Consequence: the unified contract should be **Claude-shaped semantics with
 typed extensions**, not a lowest-common-denominator invention. Three of five
@@ -718,7 +718,7 @@ upstream reference. Seeded from provider research and production observation:
 The table below is the initially seeded set; `quirks.go` is the authoritative
 registry and has grown past it (entries #21+, including the OpenClaw rows
 #34–#37, the Copilot CLI dialect rows #38–#41, and the VS Code Copilot Chat
-rows #42–#48).
+rows #42–#49).
 
 | # | Quirk | Mitigation |
 |---|---|---|

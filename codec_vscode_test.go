@@ -229,17 +229,27 @@ func TestVSCodeHookEventNameNeverTopLevel(t *testing.T) {
 // than Claude Code's in both directions, and each narrowing below is a place a
 // handler would otherwise believe it had an effect it does not have.
 func TestVSCodeDegradesUnsupportedDecisions(t *testing.T) {
-	// tool.post has no CapReplaceOutput: updatedToolOutput is a Claude
-	// extension VS Code's output parser does not read.
+	// tool.post has neither CapReplaceOutput nor CapAddContext:
+	// updatedToolOutput is a Claude extension VS Code does not read, while live
+	// verification found both of VS Code's apparent feedback placements are
+	// accepted but ignored before the next model turn.
 	post := quietRunner()
 	post.OnToolPost(func(ctx context.Context, e *ToolPostEvent) (ToolPostDecision, error) {
-		if e.Can(CapReplaceOutput) {
-			t.Error("vscode tool.post must not report CapReplaceOutput")
+		if e.Can(CapReplaceOutput) || e.Can(CapAddContext) {
+			t.Error("vscode tool.post must report neither CapReplaceOutput nor CapAddContext")
 		}
 		return ReplaceOutput("scrubbed"), nil
 	})
 	if out, code := runWith(t, post, vscodeArgs(), fixture(t, "claude/post_tool_use.json")); out != "{}" || code != 0 {
 		t.Errorf("replace-output on tool.post = %q (exit %d), want {} at exit 0", out, code)
+	}
+
+	contextPost := quietRunner()
+	contextPost.OnToolPost(func(context.Context, *ToolPostEvent) (ToolPostDecision, error) {
+		return Observed().WithContext("ignored upstream"), nil
+	})
+	if out, code := runWith(t, contextPost, vscodeArgs(), fixture(t, "claude/post_tool_use.json")); out != "{}" || code != 0 {
+		t.Errorf("context on tool.post = %q (exit %d), want {} at exit 0", out, code)
 	}
 
 	// agent.stop takes a continuation and nothing else: no ask, no context.
