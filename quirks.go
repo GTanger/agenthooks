@@ -205,7 +205,7 @@ var quirkRegistry = []Quirk{
 		Mitigation: "renderVSCode emits no matcher key and hookCommand appends --filter for every non-empty matcher; in-process filtering is the only real enforcement",
 		Reference:  "vscode agent hooks FAQ"},
 	{ID: 43, Provider: ProviderVSCodeCopilot, Versions: "VS Code 1.109+ / Copilot Chat 0.38+, Preview", Event: KindOther,
-		Behavior:   "the hook child gets {...process.env, ...hook.env} and nothing else — no COPILOT_*/CLAUDE_*/VSCODE_* marker — and no payload field Claude Code does not also send",
+		Behavior:   "the hook child gets {...process.env, ...hook.env} with no hook-specific COPILOT_*/CLAUDE_*/VSCODE_* marker, and no payload field relevant to provider detection that Claude Code does not also send (recorded VS Code payloads additionally carry timestamp)",
 		Mitigation: "detection is flag-only: generated config carries --provider=vscode-copilot and neither detectFromEnv nor detectFromShape gains a branch; a hand-written config without the flag degrades to claude-code",
 		Reference:  "microsoft/vscode hookExecutor.ts"},
 	{ID: 44, Provider: ProviderVSCodeCopilot, Versions: "VS Code 1.109+ / Copilot Chat 0.38+, Preview", Event: KindOther,

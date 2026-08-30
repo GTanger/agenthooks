@@ -558,7 +558,7 @@ func TestRenderVSCodeScopes(t *testing.T) {
 // silently rather than loudly: a matcher that reads as enforcement VS Code does
 // not perform, a version key no VS Code example carries (an unknown key is a
 // schema-validation risk), bash/powershell keys VS Code does not understand at
-// all (its split is windows/linux/osx), and the two unreconciled timeout
+// all (its platform override is windows), and the two unreconciled timeout
 // spellings — the reference table says timeout, a usage example says
 // timeoutSec, and reading the missing one silently means the 30s default.
 func TestRenderVSCodeOmissions(t *testing.T) {
@@ -567,7 +567,7 @@ func TestRenderVSCodeOmissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := readRendered(t, fsys, ".github/hooks/agenthooks-vscode.json")
-	for _, key := range []string{`"matcher"`, `"version"`, `"bash"`, `"powershell"`, `"windows"`, `"osx"`} {
+	for _, key := range []string{`"matcher"`, `"version"`, `"bash"`, `"powershell"`, `"osx"`} {
 		if bytes.Contains(raw, []byte(key)) {
 			t.Errorf("%s key present:\n%s", key, raw)
 		}

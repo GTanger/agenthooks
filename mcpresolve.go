@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -120,6 +121,12 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 		// is ambiguous whenever the server name contains "_" (quirk #15), so
 		// match configured names longest-first.
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", verbatimMCPName)
+	case ProviderVSCodeCopilot:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
+		// VS Code uses mcp_<server>_<tool> and truncates its sanitized
+		// server prefix. Colliding runtime-assigned numeric suffixes remain
+		// unresolved because their assignment depends on registration order.
+		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", vscodeSanitizeMCPName)
 	case ProviderCursor:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		if tc.MCP.Server != "" {
@@ -340,6 +347,19 @@ func verbatimMCPName(name string) string {
 	return strings.ReplaceAll(name, " ", "_")
 }
 
+var vscodeUnsafeMCPName = regexp.MustCompile(`[^a-z0-9_.-]+`)
+
+// vscodeSanitizeMCPName mirrors VS Code's McpPrefixGenerator. The full MCP
+// prefix is capped at 18 characters: "mcp_", at most 13 server characters,
+// then "_" before the tool name.
+func vscodeSanitizeMCPName(name string) string {
+	s := vscodeUnsafeMCPName.ReplaceAllString(strings.ToLower(name), "_")
+	if len(s) > 13 {
+		s = s[:13]
+	}
+	return s
+}
+
 // loadMCPConfigEntries reads the provider's MCP server config files. Missing
 // or malformed files contribute nothing. More specific scopes come first and
 // win name collisions (project over user).
@@ -420,6 +440,12 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		if dir != "" {
 			groups = append(groups, readMCPServersJSON(filepath.Join(dir, "mcp-config.json")))
 		}
+	case ProviderVSCodeCopilot:
+		if cwd != "" {
+			groups = append(groups,
+				readVSCodeMCPJSON(filepath.Join(cwd, ".vscode", "mcp.json")),
+				readMCPServersJSON(filepath.Join(cwd, ".mcp.json")))
+		}
 	case ProviderOpenCode:
 		// opencode.json(c) at project root; global config under
 		// $XDG_CONFIG_HOME/opencode (default ~/.config/opencode). The .jsonc
@@ -470,6 +496,20 @@ func parseMCPServersJSON(data []byte) []mcpConfigEntry {
 		return nil
 	}
 	return mcpEntriesFromJSON(doc.MCPServers)
+}
+
+func readVSCodeMCPJSON(path string) []mcpConfigEntry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Servers map[string]mcpServerJSON `json:"servers"`
+	}
+	if err := json.Unmarshal(stripJSONCComments(data), &doc); err != nil {
+		return nil
+	}
+	return mcpEntriesFromJSON(doc.Servers)
 }
 
 func firstMCPEntries(groups ...[]mcpConfigEntry) []mcpConfigEntry {

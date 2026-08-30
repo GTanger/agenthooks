@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"path"
+	"strings"
 
 	"github.com/speakeasy-api/agenthooks"
 )
@@ -26,7 +27,7 @@ var kindToVSCode = map[agenthooks.EventKind]string{
 }
 
 // vscodeHookEntry is one command entry, with three deliberate omissions and
-// one deliberate duplication:
+// two deliberate duplications:
 //
 //   - No matcher: VS Code parses matcher values and then ignores them, so a
 //     key here would read as enforcement that does not exist. --filter on the
@@ -35,8 +36,9 @@ var kindToVSCode = map[agenthooks.EventKind]string{
 //   - No version: no VS Code example carries one, and an unknown key is a
 //     schema-validation risk for zero benefit. That is also what keeps this
 //     file distinguishable from render_copilot.go's CLI document.
-//   - No bash/powershell: VS Code's platform split is windows/linux/osx, and
-//     the rendered argv (absolute path plus flags) is valid in every shell.
+//   - No bash/powershell: VS Code's platform split is windows/linux/osx. The
+//     windows override uses PowerShell's call operator so a quoted executable
+//     path is invoked instead of being parsed as a string expression.
 //   - Both timeout spellings, same value: the VS Code reference table says
 //     `timeout` while a usage example on the same doc set says `timeoutSec`,
 //     and nothing reconciles them. Reading the wrong one silently falls back
@@ -44,6 +46,7 @@ var kindToVSCode = map[agenthooks.EventKind]string{
 type vscodeHookEntry struct {
 	Type       string `json:"type"`
 	Command    string `json:"command"`
+	Windows    string `json:"windows"`
 	Timeout    int    `json:"timeout,omitempty"`
 	TimeoutSec int    `json:"timeoutSec,omitempty"`
 }
@@ -62,6 +65,7 @@ func renderVSCode(m Manifest, t Target) (fs.FS, error) {
 		hooks[event] = append(hooks[event], vscodeHookEntry{
 			Type:       "command",
 			Command:    hookCommand(m, agenthooks.ProviderVSCodeCopilot, spec),
+			Windows:    vscodePowerShellCommand(m, spec),
 			Timeout:    secs,
 			TimeoutSec: secs,
 		})
@@ -81,4 +85,26 @@ func renderVSCode(m Manifest, t Target) (fs.FS, error) {
 		files[path.Join("hooks", "agenthooks-vscode.json")] = content // Target.Dir is ~/.copilot
 	}
 	return memFS(files), nil
+}
+
+func vscodePowerShellCommand(m Manifest, spec HookSpec) string {
+	parts := make([]string, 0, len(m.Command)+5)
+	for _, arg := range m.Command {
+		parts = append(parts, powerShellQuote(arg))
+	}
+	parts = append(parts, powerShellQuote("agenthooks"), powerShellQuote("run"),
+		powerShellQuote("--provider="+string(agenthooks.ProviderVSCodeCopilot)))
+	if spec.Timeout > 0 {
+		parts = append(parts, powerShellQuote("--timeout="+spec.Timeout.String()))
+	}
+	if !spec.Tools.IsEmpty() {
+		if _, ok := agenthooks.CompileMatcher(agenthooks.ProviderVSCodeCopilot, spec.Tools); !ok {
+			parts = append(parts, powerShellQuote("--filter="+spec.Tools.Encode()))
+		}
+	}
+	return "& " + strings.Join(parts, " ")
+}
+
+func powerShellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 }

@@ -279,8 +279,8 @@ func CanonicalToolFor(name string) CanonicalTool {
 }
 
 // ParseMCPName decodes the three MCP tool-name dialects:
-// mcp__server__tool (Claude/Codex), mcp_server_tool (Gemini, best-effort
-// since "_" is ambiguous), and MCP:tool (Cursor, server unknown).
+// mcp__server__tool (Claude/Codex), mcp_server_tool (Gemini/VS Code,
+// best-effort since "_" is ambiguous), and MCP:tool (Cursor, server unknown).
 // It returns nil when the name is not MCP-shaped.
 func ParseMCPName(name string) *MCPCall {
 	switch {

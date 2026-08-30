@@ -217,8 +217,10 @@ config, and an absent one already means match-all.
   event keys are the CLI's Claude-compat mode, and the CLI's own `COPILOT_*`
   env demotes the session to `copilot` before decode, so each runtime gets
   its own capability row and response schema (VS Code nested, the CLI flat).
-  Install `vscode-copilot` for both runtimes (8 events) or `copilot` for the
-  CLI's full 14; installing both double-fires in the CLI. Cross-runtime
+  Install `vscode-copilot` for both runtimes (8 events) or `copilot` for 12
+  mapped CLI events; the CLI's two other native events currently decode only as
+  `KindOther` and cannot be registered by generated configs. Installing both
+  targets double-fires in the CLI. Cross-runtime
   registration is verified against Copilot CLI 1.0.81 for the five events a
   headless turn can drive; `SubagentStart`, `SubagentStop` and `PreCompact`
   are unmeasured there.

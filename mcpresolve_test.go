@@ -1065,6 +1065,34 @@ func TestResolveMCPCopilotHomeOverride(t *testing.T) {
 	}
 }
 
+func TestResolveMCPVSCode(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".vscode", "mcp.json"), `{
+		// VS Code uses a servers block and permits JSONC.
+		"servers": {"github": {"type": "http", "url": "https://example.test/vscode"}}
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
+		"mcpServers": {"My Long Server Name!!!": {"url": "https://example.test/root"}}
+	}`)
+	r := mcpTestRunner(t)
+	for _, tc := range []struct {
+		name, server, tool, url string
+	}{
+		{"mcp_github_list_issues", "github", "list_issues", "https://example.test/vscode"},
+		{"mcp_my_long_serve_search", "my_long_serve", "search", "https://example.test/root"},
+	} {
+		ev := mcpToolPre(ProviderVSCodeCopilot, cwd, tc.name)
+		r.resolveMCP(ev)
+		if ev.Tool.MCP == nil {
+			t.Fatalf("%s: MCP call was not recognized", tc.name)
+		}
+		if got := ev.Tool.MCP; got.Server != tc.server || got.Tool != tc.tool || got.URL != tc.url || !got.FromConfig {
+			t.Errorf("%s: VS Code MCP resolution = %+v", tc.name, got)
+		}
+	}
+}
+
 func TestResolveMCPOpenCodeJSONCGlobal(t *testing.T) {
 	home := isolateHome(t)
 	// Real-world shape: the global config is a .jsonc with comments under

@@ -114,17 +114,16 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		// permission.request, session.end, tool.error and notification are
 		// absent: VS Code never fires them.
 		//
-		// CompactPre is the one inferred row: PreCompact is a real HookType but
-		// no consumer callsite was read, so its two capabilities come from the
-		// generic _toHookResult path every hook type goes through.
+		// SubagentStart and CompactPre are observe-only in the public runner,
+		// so their upstream output channels are not capabilities here. Stop and
+		// SubagentStop cannot advertise CapStopAgent because StopDecision has no
+		// operation that sets it.
 		KindToolPre:         caps(CapDeny, CapAsk, CapAllow, CapUpdateInput, CapAddContext, CapSystemMessage, CapStopAgent),
 		KindToolPost:        caps(CapAddContext, CapSystemMessage, CapStopAgent),
 		KindPromptSubmitted: caps(CapDeny, CapAddContext, CapSystemMessage, CapStopAgent),
 		KindSessionStart:    caps(CapAddContext, CapSystemMessage),
-		KindSubagentStart:   caps(CapAddContext, CapSystemMessage),
-		KindStop:            caps(CapContinueAgent, CapSystemMessage, CapStopAgent),
-		KindSubagentStop:    caps(CapContinueAgent, CapSystemMessage, CapStopAgent),
-		KindCompactPre:      caps(CapSystemMessage, CapStopAgent),
+		KindStop:            caps(CapContinueAgent, CapSystemMessage),
+		KindSubagentStop:    caps(CapContinueAgent, CapSystemMessage),
 	},
 	ProviderKimi: {
 		// Only UserPromptSubmit, PreToolUse and Stop are blockable; JSON

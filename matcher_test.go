@@ -73,6 +73,17 @@ func TestCapabilityDivergences(t *testing.T) {
 	if Capabilities(ProviderOpenCode, "", KindStop).Has(CapContinueAgent) {
 		t.Error("opencode session.idle cannot continue the agent")
 	}
+	for _, kind := range []EventKind{KindSubagentStart, KindCompactPre} {
+		if got := Capabilities(ProviderVSCodeCopilot, "", kind); len(got) != 0 {
+			t.Errorf("VS Code %s is observe-only; capabilities = %v", kind, got)
+		}
+	}
+	for _, kind := range []EventKind{KindStop, KindSubagentStop} {
+		got := Capabilities(ProviderVSCodeCopilot, "", kind)
+		if !got.Has(CapContinueAgent) || !got.Has(CapSystemMessage) || got.Has(CapStopAgent) {
+			t.Errorf("VS Code %s stop capabilities = %v", kind, got)
+		}
+	}
 	e := &Event{Provider: ProviderCursor, Kind: KindToolPre}
 	if !e.Can(CapDeny) {
 		t.Error("Event.Can should reflect the matrix")

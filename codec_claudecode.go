@@ -56,6 +56,10 @@ type claudeIn struct {
 }
 
 func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
+	return decodeClaudeProvider(ProviderClaudeCode, v, conf, now, payload)
+}
+
+func decodeClaudeProvider(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
 	var in claudeIn
 	if err := json.Unmarshal(payload, &in); err != nil {
 		return nil, err
@@ -65,7 +69,7 @@ func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            ProviderClaudeCode,
+		Provider:            p,
 		Variant:             v,
 		NativeName:          in.HookEventName,
 		Kind:                kind,
@@ -86,7 +90,7 @@ func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: in.AgentType}
 	}
 	typed := buildClaudeShaped(base, &in)
-	if event, ok := typed.(*ToolPostEvent); ok {
+	if event, ok := typed.(*ToolPostEvent); ok && p == ProviderClaudeCode {
 		backfillClaudeSkillOutput(event)
 	}
 	return typed, nil
@@ -97,14 +101,7 @@ func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []
 // both ship the Claude wire shape verbatim; only the response schema differs,
 // and that is selected downstream by Provider.
 func decodeClaudeAs(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
-	typed, err := decodeClaude(v, conf, now, payload)
-	if err != nil {
-		return nil, err
-	}
-	if b := eventOf(typed); b != nil {
-		b.Provider = p
-	}
-	return typed, nil
+	return decodeClaudeProvider(p, v, conf, now, payload)
 }
 
 // buildClaudeShaped constructs typed events from the Claude-shaped wire form.

@@ -44,7 +44,7 @@ func TestVSCodeDecodesRecordedCorpus(t *testing.T) {
 // Claude corpus IS the VS Code wire shape — same snake_case fields, same
 // PascalCase event names — and the recorded corpus above proved it. It stays so
 // that a future divergence in either dialect fails here, and because it covers
-// the five VS Code events the three recorded fixtures do not.
+// the four VS Code events the three recorded fixtures do not.
 func TestVSCodeDecodesClaudeCorpus(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("agenthookstest", "fixtures", "claude", "*.json"))
 	if err != nil || len(paths) == 0 {
@@ -88,6 +88,36 @@ func assertVSCodeDecodes(t *testing.T, paths []string) {
 			}
 			if string(ev.Raw) != string(payload) {
 				t.Error("Raw must be byte-identical to the payload")
+			}
+		})
+	}
+}
+
+func TestClaudeShapedNonClaudeSkillOutputIsNotBackfilled(t *testing.T) {
+	isolateClaudeSkillRoots(t)
+	cwd := t.TempDir()
+	writeClaudeSkillManifest(t, filepath.Join(cwd, ".claude", "skills", "review"), "local skill body")
+	payload, err := json.Marshal(map[string]any{
+		"session_id":      "session-1",
+		"cwd":             cwd,
+		"hook_event_name": "PostToolUse",
+		"tool_name":       "Skill",
+		"tool_input":      map[string]string{"skill": "review"},
+		"tool_response":   map[string]string{"actual": "provider output"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, provider := range []Provider{ProviderVSCodeCopilot, ProviderCopilot} {
+		t.Run(string(provider), func(t *testing.T) {
+			typed, err := decodeClaudeAs(provider, VariantUnknown, DetectionConfig, testNow, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := typed.(*ToolPostEvent)
+			if got, want := string(event.Output), `{"actual":"provider output"}`; got != want {
+				t.Errorf("Output = %s, want provider output %s", got, want)
 			}
 		})
 	}
@@ -225,11 +255,10 @@ func TestVSCodeDegradesUnsupportedDecisions(t *testing.T) {
 		t.Errorf("finish on agent.stop = %q (exit %d), want {} at exit 0", out, code)
 	}
 
-	// subagent.start is NOT observe-only: VS Code honors its additionalContext
-	// the same way it honors SessionStart's, and encodeClaude has no case for
-	// it, so encodeVSCode has to add one.
-	if !Capabilities(ProviderVSCodeCopilot, VariantUnknown, KindSubagentStart).Has(CapAddContext) {
-		t.Error("vscode subagent.start must report CapAddContext")
+	// VS Code can encode subagent.start context, but the public handler is
+	// observe-only and therefore cannot produce it as a capability.
+	if got := Capabilities(ProviderVSCodeCopilot, VariantUnknown, KindSubagentStart); len(got) != 0 {
+		t.Errorf("vscode subagent.start must be observe-only; capabilities = %v", got)
 	}
 	sub := &Event{Provider: ProviderVSCodeCopilot, NativeName: "SubagentStart", Kind: KindSubagentStart}
 	wire, err := encodeVSCode(sub, decisionCore{context: []string{"repo is frozen for release"}})
