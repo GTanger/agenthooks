@@ -3,10 +3,11 @@
 //
 // Two wire quirks the unified layer normalizes: Copilot omits the event name
 // from most payloads (only permissionRequest carries hookName, only
-// notification carries hook_event_name), and tool arguments arrive as a
-// JSON-ENCODED STRING in toolArgs on pre/postToolUse while permissionRequest
-// ships a plain object in toolInput. These views hand you the wire truth; use
-// the unified Event.NativeName and ToolCall for the normalized form.
+// notification carries hook_event_name), and toolArgs has changed shape across
+// CLI releases — a JSON-ENCODED STRING through 1.0.80, a plain object from
+// 1.0.81 — while permissionRequest has always shipped a plain object in
+// toolInput. These views hand you the wire truth; use the unified
+// Event.NativeName and ToolCall for the normalized form.
 package copilot
 
 import (
@@ -46,12 +47,18 @@ type UserPromptSubmittedInput struct {
 	Extra  map[string]json.RawMessage `json:"-"`
 }
 
-// PreToolUseInput is the native preToolUse payload. ToolArgs is a JSON-encoded
-// string, and no tool-call id is supplied.
+// PreToolUseInput is the native preToolUse payload. No tool-call id is
+// supplied.
+//
+// ToolArgs is raw because the CLI changed its shape without changing its name:
+// through 1.0.80 it was a JSON-encoded string, from 1.0.81 it is a plain
+// object. Typing it as either one makes the view reject every tool event on
+// the other release — silently, since callers key on ok. Handle both, or read
+// the normalized object off the unified ToolCall.Input.
 type PreToolUseInput struct {
 	Base
 	ToolName string                     `json:"toolName"`
-	ToolArgs string                     `json:"toolArgs"`
+	ToolArgs json.RawMessage            `json:"toolArgs"`
 	Extra    map[string]json.RawMessage `json:"-"`
 }
 
@@ -65,7 +72,7 @@ type ToolResult struct {
 type PostToolUseInput struct {
 	Base
 	ToolName   string                     `json:"toolName"`
-	ToolArgs   string                     `json:"toolArgs"`
+	ToolArgs   json.RawMessage            `json:"toolArgs"`
 	ToolResult ToolResult                 `json:"toolResult"`
 	Extra      map[string]json.RawMessage `json:"-"`
 }
@@ -77,7 +84,7 @@ type PostToolUseInput struct {
 type PostToolUseFailureInput struct {
 	Base
 	ToolName   string                     `json:"toolName"`
-	ToolArgs   string                     `json:"toolArgs"`
+	ToolArgs   json.RawMessage            `json:"toolArgs"`
 	Error      string                     `json:"error"`
 	ToolResult ToolResult                 `json:"toolResult"`
 	Extra      map[string]json.RawMessage `json:"-"`

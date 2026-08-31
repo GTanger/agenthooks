@@ -48,6 +48,11 @@ func TestCanonicalToolFor(t *testing.T) {
 		"MCP:issues":        ToolMCP,
 		"SomethingCustom":   ToolOther,
 
+		// Copilot CLI's file tools, observed live on 1.0.81: bare verbs that
+		// matched nothing, so every read and write on that CLI was ToolOther.
+		"view":   ToolFileRead,
+		"create": ToolFileWrite,
+
 		// VS Code Copilot Chat. run_in_terminal and replace_string_in_file were
 		// observed in a live capture session; the rest come from the
 		// extension's wire-name table. Before these landed they all classified

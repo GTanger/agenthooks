@@ -56,10 +56,6 @@ type claudeIn struct {
 }
 
 func decodeClaude(v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
-	return decodeClaudeProvider(ProviderClaudeCode, v, conf, now, payload)
-}
-
-func decodeClaudeProvider(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
 	var in claudeIn
 	if err := json.Unmarshal(payload, &in); err != nil {
 		return nil, err
@@ -69,7 +65,7 @@ func decodeClaudeProvider(p Provider, v Variant, conf DetectionConfidence, now t
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            p,
+		Provider:            ProviderClaudeCode,
 		Variant:             v,
 		NativeName:          in.HookEventName,
 		Kind:                kind,
@@ -90,18 +86,10 @@ func decodeClaudeProvider(p Provider, v Variant, conf DetectionConfidence, now t
 		base.Agent = &AgentInfo{ID: in.AgentID, Type: in.AgentType}
 	}
 	typed := buildClaudeShaped(base, &in)
-	if event, ok := typed.(*ToolPostEvent); ok && p == ProviderClaudeCode {
+	if event, ok := typed.(*ToolPostEvent); ok {
 		backfillClaudeSkillOutput(event)
 	}
 	return typed, nil
-}
-
-// decodeClaudeAs decodes a Claude-shaped payload under a different provider
-// label. VS Code Copilot Chat and the Copilot CLI's PascalCase compat mode
-// both ship the Claude wire shape verbatim; only the response schema differs,
-// and that is selected downstream by Provider.
-func decodeClaudeAs(p Provider, v Variant, conf DetectionConfidence, now time.Time, payload []byte) (any, error) {
-	return decodeClaudeProvider(p, v, conf, now, payload)
 }
 
 // buildClaudeShaped constructs typed events from the Claude-shaped wire form.

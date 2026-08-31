@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -588,5 +589,31 @@ func TestRenderVSCodeOmissions(t *testing.T) {
 	stop := cfg.Hooks["Stop"][0]
 	if stop.Timeout == nil || *stop.Timeout != 60 {
 		t.Errorf("Stop timeout = %v, want the 60s default", stop.Timeout)
+	}
+}
+
+// TestHookCommandQuotesSpacedBinary pins the quoting of a consumer binary whose
+// path contains spaces. The dialect follows the HOST OS, not the provider
+// (shellQuote, install.go:355-374): configs are rendered on the machine that
+// runs them, cmd.exe has no single-quote syntax and POSIX shells have no
+// cmd-style escaping.
+//
+// The Windows form is cmd.exe's, and deliberately so: PowerShell parses a
+// statement that begins with a quote as an expression, so it needs a leading
+// call operator (& "C:\Program Files\...") that cmd.exe in turn rejects — no
+// single string is valid in both. Both shells are reachable on Windows (the
+// Copilot CLI copies command into its powershell key, render_copilot.go:34-36),
+// so if a spaced path is ever observed failing under PowerShell the fix is a
+// per-shell rendering for those providers, not a change to this quoting.
+func TestHookCommandQuotesSpacedBinary(t *testing.T) {
+	m := testManifest()
+	m.Command = []string{"/opt/My Hooks/myhooks"}
+	want := `'/opt/My Hooks/myhooks' agenthooks run --provider=vscode-copilot`
+	if runtime.GOOS == "windows" {
+		want = `"/opt/My Hooks/myhooks" agenthooks run --provider=vscode-copilot`
+	}
+	got := hookCommand(m, agenthooks.ProviderVSCodeCopilot, m.Hooks[0])
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("spaced binary path unquoted or wrong dialect:\n got %s\nwant prefix %s", got, want)
 	}
 }

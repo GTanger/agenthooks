@@ -61,7 +61,7 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 	case ProviderCopilot:
 		return decodeCopilot(v, conf, now, payload)
 	case ProviderVSCodeCopilot:
-		return decodeClaudeAs(ProviderVSCodeCopilot, v, conf, now, payload)
+		return decodeVSCode(v, conf, now, payload)
 	}
 	return nil, fmt.Errorf("agenthooks: unknown provider %q", p)
 }

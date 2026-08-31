@@ -79,7 +79,7 @@ func assertVSCodeDecodes(t *testing.T, paths []string) {
 			if ev.NativeName != wire.Name {
 				t.Errorf("native name = %q, want %q", ev.NativeName, wire.Name)
 			}
-			want, ok := claudeKinds[wire.Name]
+			want, ok := vscodeKinds[wire.Name]
 			if !ok {
 				want = KindOther
 			}
@@ -88,36 +88,6 @@ func assertVSCodeDecodes(t *testing.T, paths []string) {
 			}
 			if string(ev.Raw) != string(payload) {
 				t.Error("Raw must be byte-identical to the payload")
-			}
-		})
-	}
-}
-
-func TestClaudeShapedNonClaudeSkillOutputIsNotBackfilled(t *testing.T) {
-	isolateClaudeSkillRoots(t)
-	cwd := t.TempDir()
-	writeClaudeSkillManifest(t, filepath.Join(cwd, ".claude", "skills", "review"), "local skill body")
-	payload, err := json.Marshal(map[string]any{
-		"session_id":      "session-1",
-		"cwd":             cwd,
-		"hook_event_name": "PostToolUse",
-		"tool_name":       "Skill",
-		"tool_input":      map[string]string{"skill": "review"},
-		"tool_response":   map[string]string{"actual": "provider output"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, provider := range []Provider{ProviderVSCodeCopilot, ProviderCopilot} {
-		t.Run(string(provider), func(t *testing.T) {
-			typed, err := decodeClaudeAs(provider, VariantUnknown, DetectionConfig, testNow, payload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			event := typed.(*ToolPostEvent)
-			if got, want := string(event.Output), `{"actual":"provider output"}`; got != want {
-				t.Errorf("Output = %s, want provider output %s", got, want)
 			}
 		})
 	}

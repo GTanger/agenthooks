@@ -43,8 +43,10 @@ func TestCopilotEventNamesFromShape(t *testing.T) {
 	}
 }
 
-// toolArgs is a JSON-encoded string on pre/postToolUse and a plain object on
-// permissionRequest; both must normalize to an object.
+// toolArgs is a plain object on pre/postToolUse from CLI 1.0.81 and a
+// JSON-encoded string through 1.0.80; permissionRequest's toolInput is an
+// object throughout. All three must normalize to the same object, so a policy
+// written against ToolCall.Input keeps working across the version boundary.
 func TestCopilotToolArgsNormalize(t *testing.T) {
 	typed, err := decodeCopilot(VariantUnknown, DetectionConfig, testNow, fixture(t, "copilot/pre_tool_use.json"))
 	if err != nil {
@@ -65,6 +67,19 @@ func TestCopilotToolArgsNormalize(t *testing.T) {
 	}
 	if pre.Tool.Canonical != ToolShell || !pre.Tool.Synthesized {
 		t.Errorf("tool = %+v; copilot ships no call id, so it must be synthesized", pre.Tool)
+	}
+
+	legacy := []byte(`{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{\"command\":\"echo hello-from-gram\"}"}`)
+	typed, err = decodeCopilot(VariantUnknown, DetectionConfig, testNow, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, ok = typed.(*ToolPreEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPreEvent", typed)
+	}
+	if err := json.Unmarshal(pre.Tool.Input, &args); err != nil || args.Command != "echo hello-from-gram" {
+		t.Errorf("1.0.80 double-encoded toolArgs did not un-stringify: %s (%v)", pre.Tool.Input, err)
 	}
 
 	typed, err = decodeCopilot(VariantUnknown, DetectionConfig, testNow, fixture(t, "copilot/permission_request.json"))
@@ -402,9 +417,8 @@ func TestCopilotClaudeShapedFallthrough(t *testing.T) {
 		if ev.NativeName != tc.native || ev.Kind != tc.kind {
 			t.Errorf("%s decoded as native=%q kind=%q, want %q/%q", tc.fixture, ev.NativeName, ev.Kind, tc.native, tc.kind)
 		}
-		// The label must stay ProviderCopilot: it is what selects the CLI's
-		// flat response schema downstream. decodeClaude hardcodes
-		// claude-code, so the relabel in decodeClaudeAs is load-bearing.
+		// The label must stay ProviderCopilot: it selects the CLI's flat
+		// response schema downstream.
 		if ev.Provider != ProviderCopilot {
 			t.Errorf("%s provider = %q, want %q", tc.fixture, ev.Provider, ProviderCopilot)
 		}

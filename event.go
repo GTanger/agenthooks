@@ -227,9 +227,15 @@ var canonicalNames = map[string]CanonicalTool{
 
 	"read": ToolFileRead, "read_file": ToolFileRead, "readfile": ToolFileRead,
 	"view_file": ToolFileRead, "read_many_files": ToolFileRead, "notebookread": ToolFileRead,
+	// The Copilot CLI names its file tools with bare verbs no other provider
+	// uses: `view` reads a path and `create` writes one ({path, file_text}).
+	// Neither matched anything above, so a deny-file-read or deny-file-write
+	// policy silently covered nothing on that CLI.
+	"view": ToolFileRead,
 
 	"write": ToolFileWrite, "write_file": ToolFileWrite, "writefile": ToolFileWrite,
 	"create_file": ToolFileWrite, "save_file": ToolFileWrite,
+	"create": ToolFileWrite,
 
 	"edit": ToolFileEdit, "multiedit": ToolFileEdit, "apply_patch": ToolFileEdit,
 	"replace": ToolFileEdit, "edit_file": ToolFileEdit, "notebookedit": ToolFileEdit,

@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -24,6 +25,12 @@ type config struct {
 	Deny string `json:"deny,omitempty"`
 	// RewriteCommand replaces shell tool arguments and explicitly allows the call.
 	RewriteCommand string `json:"rewrite_command,omitempty"`
+	// ContinueInstruction is returned from the first agent.stop as
+	// ContinueWith, so a test can assert the agent really kept working. It
+	// fires at most once per sink: providers that never report their own
+	// continuation guard (stop_hook_active) would otherwise loop forever,
+	// and the library cap only trips on a reported LoopCount.
+	ContinueInstruction string `json:"continue_instruction,omitempty"`
 }
 
 // record is one JSONL line. Kind "tool.pre" lines are emitted twice: once by
@@ -45,7 +52,13 @@ type record struct {
 	Prompt     string          `json:"prompt,omitempty"`
 	Denied     bool            `json:"denied,omitempty"`
 	Rewritten  bool            `json:"rewritten,omitempty"`
-	Raw        json.RawMessage `json:"raw,omitempty"`
+	Continued  bool            `json:"continued,omitempty"`
+	// PrevContinued/LoopCount are the provider's own continuation guard as
+	// the library unified it; both are recorded rather than asserted, since
+	// whether a provider reports one at all is what the test measures.
+	PrevContinued bool            `json:"prev_continued,omitempty"`
+	LoopCount     int             `json:"loop_count,omitempty"`
+	Raw           json.RawMessage `json:"raw,omitempty"`
 }
 
 func main() {
@@ -104,6 +117,25 @@ func main() {
 		}
 		return agenthooks.NoDecision(), nil
 	})
+	r.OnStop(func(_ context.Context, e *agenthooks.StopEvent) (agenthooks.StopDecision, error) {
+		cont := cfg.ContinueInstruction != "" && !e.PreviouslyContinued && !alreadyContinued(cfg.Out)
+		appendRecord(cfg.Out, record{
+			Typed:         true,
+			TimeMS:        e.Time.UnixMilli(),
+			Provider:      string(e.Provider),
+			Variant:       string(e.Variant),
+			Native:        e.NativeName,
+			Kind:          string(e.Kind),
+			Session:       e.Session.ID,
+			Continued:     cont,
+			PrevContinued: e.PreviouslyContinued,
+			LoopCount:     e.LoopCount,
+		})
+		if cont {
+			return agenthooks.ContinueWith(cfg.ContinueInstruction), nil
+		}
+		return agenthooks.Finish(), nil
+	})
 
 	agenthooks.Main(r)
 }
@@ -120,6 +152,14 @@ func loadConfig() config {
 	}
 	_ = json.Unmarshal(data, &cfg)
 	return cfg
+}
+
+// alreadyContinued reports whether an earlier hook process for this sink
+// already returned a continuation. Each hook firing is its own process, so
+// the sink is the only shared state available to bound the loop.
+func alreadyContinued(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && bytes.Contains(data, []byte(`"continued":true`))
 }
 
 func appendRecord(path string, rec record) {
