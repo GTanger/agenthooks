@@ -75,8 +75,8 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any,
 	// Copilot branches here rather than in resolveMCPProvider's switch: that
 	// path only enriches a tc.MCP the codec already built, and Copilot's
 	// unmarked <server>-<tool> names leave it nil, so it would return early.
-	if base.Provider == ProviderCopilot {
-		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilot, base.Session.CWD))
+	if base.Provider == ProviderCopilotCLI {
+		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilotCLI, base.Session.CWD))
 		return
 	}
 	r.resolveMCPProvider(ctx, typed)
@@ -420,7 +420,7 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		if home != "" {
 			groups = append(groups, readMCPServersJSON(filepath.Join(home, ".kimi", "mcp.json")))
 		}
-	case ProviderCopilot:
+	case ProviderCopilotCLI:
 		// Workspace scope first: Copilot auto-loads .mcp.json and
 		// .github/mcp.json from the repo and those win name collisions against the
 		// user-scope file. COPILOT_HOME overrides the user directory

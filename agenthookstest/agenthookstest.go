@@ -66,6 +66,8 @@ func FixtureDir(p agenthooks.Provider) string {
 		return "openclaw"
 	case agenthooks.ProviderKimi:
 		return "kimi"
+	case agenthooks.ProviderCopilotCLI:
+		return "copilot"
 	case agenthooks.ProviderVSCodeCopilot:
 		return "vscode"
 	}

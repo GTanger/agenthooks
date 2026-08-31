@@ -51,13 +51,13 @@ func TestDemoteVSCodeToCLI(t *testing.T) {
 	}
 
 	t.Setenv("COPILOT_PLUGIN_ROOT", "/tmp/plugin")
-	if got := demoteVSCodeToCLI(ProviderVSCodeCopilot); got != ProviderCopilot {
-		t.Errorf("COPILOT_PLUGIN_ROOT set → %q, want %q", got, ProviderCopilot)
+	if got := demoteVSCodeToCLI(ProviderVSCodeCopilot); got != ProviderCopilotCLI {
+		t.Errorf("COPILOT_PLUGIN_ROOT set → %q, want %q", got, ProviderCopilotCLI)
 	}
 	// Every other provider is untouched: Claude Code hooks run inside a
 	// Copilot CLI session under CLAUDE_* compat vars, and demoting those would
 	// hijack a provider that never shared the file.
-	for _, p := range []Provider{ProviderClaudeCode, ProviderCopilot, ProviderCursor, ""} {
+	for _, p := range []Provider{ProviderClaudeCode, ProviderCopilotCLI, ProviderCursor, ""} {
 		if got := demoteVSCodeToCLI(p); got != p {
 			t.Errorf("demote(%q) = %q, want unchanged", p, got)
 		}

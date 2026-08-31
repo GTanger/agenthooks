@@ -89,7 +89,7 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindToolPre:         caps(CapDeny, CapAsk, CapUpdateInput),
 		KindPromptSubmitted: caps(CapDeny),
 	},
-	ProviderCopilot: {
+	ProviderCopilotCLI: {
 		// preToolUse and permissionRequest are the only decision-capable
 		// events: deny was observed enforced end to end, and it fires even
 		// under --allow-all/--yolo. prompt.submitted is deliberately an empty

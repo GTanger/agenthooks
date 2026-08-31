@@ -196,7 +196,7 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 	if err := json.Unmarshal(payload, &in); err != nil {
 		return nil, err
 	}
-	// PascalCase compatibility fallthrough. A --provider=copilot registration
+	// PascalCase compatibility fallthrough. A --provider=copilot-cli registration
 	// can receive this snake_case wire shape from two directions: the CLI running the
 	// PascalCase compat file this library installs for VS Code, and VS Code
 	// discovering a camelCase CLI file (both runtimes glob both hook
@@ -205,7 +205,7 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 	// lost. The discriminator is an explicit event name with no camelCase
 	// sessionId — every genuine Copilot payload keys the session on sessionId,
 	// including the one native event (notification) that also ships
-	// hook_event_name. The label stays ProviderCopilot so encodeCopilot still
+	// hook_event_name. The label stays ProviderCopilotCLI so encodeCopilot still
 	// answers in the CLI's flat schema.
 	if in.HookEventName != "" && in.SessionID == "" {
 		return decodeCopilotCompat(v, conf, now, payload)
@@ -216,7 +216,7 @@ func decodeCopilot(v Variant, conf DetectionConfidence, now time.Time, payload [
 		kind = KindOther
 	}
 	base := Event{
-		Provider:            ProviderCopilot,
+		Provider:            ProviderCopilotCLI,
 		Variant:             v,
 		NativeName:          native,
 		Kind:                kind,
@@ -307,7 +307,7 @@ func decodeCopilotCompat(v Variant, conf DetectionConfidence, now time.Time, pay
 		kind = KindOther
 	}
 	base := Event{
-		Provider: ProviderCopilot, Variant: v, NativeName: in.HookEventName,
+		Provider: ProviderCopilotCLI, Variant: v, NativeName: in.HookEventName,
 		Kind: kind, Time: now, DetectionConfidence: conf,
 		Session: SessionInfo{
 			ID: in.SessionID, TurnID: in.PromptID, CWD: in.CWD,

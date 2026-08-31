@@ -110,7 +110,7 @@ func TestQuirkRegistry(t *testing.T) {
 	}
 	// The two Copilot dialects are registered separately on purpose: the CLI
 	// rows and the VS Code rows are what make the split legible.
-	for _, p := range []Provider{ProviderCursor, ProviderCopilot, ProviderVSCodeCopilot} {
+	for _, p := range []Provider{ProviderCursor, ProviderCopilotCLI, ProviderVSCodeCopilot} {
 		if len(QuirksFor(p)) == 0 {
 			t.Errorf("%s quirks missing", p)
 		}

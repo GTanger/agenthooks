@@ -412,7 +412,7 @@ func TestRenderOpenCodeShim(t *testing.T) {
 //   - bash/powershell keys (Copilot fills both from command; splitting them
 //     here would render the argv twice with no test on the second copy).
 func TestRenderCopilotPlugin(t *testing.T) {
-	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin})
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopePlugin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestRenderCopilotPlugin(t *testing.T) {
 	if pre[0].Type != "command" || pre[0].TimeoutSec != 30 {
 		t.Errorf("preToolUse entry wrong: %+v", pre[0])
 	}
-	if !strings.Contains(pre[0].Command, "agenthooks run --provider=copilot") {
+	if !strings.Contains(pre[0].Command, "agenthooks run --provider=copilot-cli") {
 		t.Errorf("command wrong: %q", pre[0].Command)
 	}
 	if len(pre[0].Bash) > 0 || len(pre[0].PowerShell) > 0 {
@@ -475,13 +475,13 @@ func TestRenderCopilotPlugin(t *testing.T) {
 func TestRenderCopilotScopes(t *testing.T) {
 	// Project scope goes to .github/hooks/, user scope to hooks/hooks.json
 	// under Target.Dir (~/.copilot). Plugin scope has nowhere to put the name.
-	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeProject})
+	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopeProject})
 	if err != nil {
 		t.Fatal(err)
 	}
 	readRendered(t, proj, ".github/hooks/agenthooks.json")
 
-	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeUser})
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestRenderCopilotScopes(t *testing.T) {
 
 	m := testManifest()
 	m.Identity.Name = ""
-	if _, err := Render(m, Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin}); err == nil {
+	if _, err := Render(m, Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopePlugin}); err == nil {
 		t.Error("plugin scope with no Identity.Name must fail, not emit a nameless package")
 	}
 }

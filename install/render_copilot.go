@@ -49,7 +49,7 @@ func renderCopilot(m Manifest, t Target) (fs.FS, error) {
 		}
 		hooks[event] = append(hooks[event], copilotHookEntry{
 			Type:       "command",
-			Command:    hookCommand(m, agenthooks.ProviderCopilot, spec),
+			Command:    hookCommand(m, agenthooks.ProviderCopilotCLI, spec),
 			TimeoutSec: timeoutSeconds(spec),
 		})
 	}

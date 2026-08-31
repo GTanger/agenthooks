@@ -153,7 +153,7 @@ type NotificationInput struct {
 }
 
 func view[T any](e *agenthooks.Event, native string) (*T, bool) {
-	if e == nil || e.Provider != agenthooks.ProviderCopilot || e.NativeName != native {
+	if e == nil || e.Provider != agenthooks.ProviderCopilotCLI || e.NativeName != native {
 		return nil, false
 	}
 	var v T

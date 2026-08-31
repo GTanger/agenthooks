@@ -33,7 +33,7 @@ var validProviders = map[Provider]bool{
 	ProviderOpenCode:   true,
 	ProviderOpenClaw:   true,
 	ProviderKimi:       true,
-	ProviderCopilot:    true,
+	ProviderCopilotCLI: true,
 	// VS Code ships no provider env marker and no field Claude Code doesn't
 	// also send, so this one is reachable by the generated --provider flag
 	// only: neither detectFromEnv nor detectFromShape can produce it.
@@ -134,7 +134,7 @@ func detectFromEnv() (Provider, bool) {
 	// Copilot cross-sets CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR into hook
 	// processes (observed on CLI 1.0.80), so it must be checked before Claude.
 	if copilotCLIEnv() {
-		return ProviderCopilot, true
+		return ProviderCopilotCLI, true
 	}
 	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
@@ -168,7 +168,7 @@ func copilotCLIEnv() bool {
 // encodeCopilot answers flat.
 func demoteVSCodeToCLI(p Provider) Provider {
 	if p == ProviderVSCodeCopilot && copilotCLIEnv() {
-		return ProviderCopilot
+		return ProviderCopilotCLI
 	}
 	return p
 }
@@ -201,7 +201,7 @@ func detectFromShape(payload []byte) (Provider, bool) {
 	// its payloads carry no event-name field at all on most events, so this is
 	// the discriminator (verified against Copilot CLI 1.0.80).
 	case probe.SessionIDCamel != "":
-		return ProviderCopilot, true
+		return ProviderCopilotCLI, true
 	case probe.ConversationID != "":
 		return ProviderCursor, true
 	case probe.HookEventName != "" && isCamel(probe.HookEventName):

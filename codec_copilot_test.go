@@ -152,7 +152,7 @@ func TestCopilotPerEventOutputSchemas(t *testing.T) {
 		t.Errorf("permissionRequest body = %s", wire.Stdout)
 	}
 
-	if Capabilities(ProviderCopilot, VariantUnknown, KindPromptSubmitted).Has(CapDeny) {
+	if Capabilities(ProviderCopilotCLI, VariantUnknown, KindPromptSubmitted).Has(CapDeny) {
 		t.Error("prompt.submitted must not claim deny: copilot drops command-hook output for it")
 	}
 
@@ -335,7 +335,7 @@ func TestCopilotSessionStartAdditionalContext(t *testing.T) {
 // Every path must still exit 0: a non-zero exit propagates to preToolUse
 // semantics as an unconditional deny.
 func TestCopilotDegradesUnsupportedDecisions(t *testing.T) {
-	copilotArgs := []string{"agenthooks", "run", "--provider=copilot"}
+	copilotArgs := []string{"agenthooks", "run", "--provider=copilot-cli"}
 
 	// permissionRequest declares deny+allow but no ask. FallbackDeny must
 	// harden to a real behavior:deny, not fall through to the empty body.
@@ -377,21 +377,21 @@ func TestCopilotDegradesUnsupportedDecisions(t *testing.T) {
 }
 
 func TestCopilotDetection(t *testing.T) {
-	inv, err := parseArgs([]string{"agenthooks", "run", "--provider=copilot"})
-	if err != nil || inv.provider != ProviderCopilot {
-		t.Fatalf("--provider=copilot → %q (%v)", inv.provider, err)
+	inv, err := parseArgs([]string{"agenthooks", "run", "--provider=copilot-cli"})
+	if err != nil || inv.provider != ProviderCopilotCLI {
+		t.Fatalf("--provider=copilot-cli → %q (%v)", inv.provider, err)
 	}
 	t.Setenv("COPILOT_CLI", "1")
 	t.Setenv("CLAUDE_PLUGIN_ROOT", "/tmp/plugin")
-	if p, ok := detectFromEnv(); !ok || p != ProviderCopilot {
+	if p, ok := detectFromEnv(); !ok || p != ProviderCopilotCLI {
 		t.Errorf("env detection = %q; copilot cross-sets CLAUDE_PLUGIN_ROOT and must win", p)
 	}
-	if p, ok := detectFromShape(fixture(t, "copilot/pre_tool_use.json")); !ok || p != ProviderCopilot {
+	if p, ok := detectFromShape(fixture(t, "copilot/pre_tool_use.json")); !ok || p != ProviderCopilotCLI {
 		t.Errorf("shape detection = %q", p)
 	}
 }
 
-// A --provider=copilot registration receives the Claude-shaped snake_case
+// A --provider=copilot-cli registration receives the Claude-shaped snake_case
 // payload from two directions — the CLI running the PascalCase compat file
 // this library installs for VS Code, and VS Code discovering a camelCase CLI
 // file, because both runtimes glob both hook directories. copilotEventName has
@@ -417,10 +417,10 @@ func TestCopilotClaudeShapedFallthrough(t *testing.T) {
 		if ev.NativeName != tc.native || ev.Kind != tc.kind {
 			t.Errorf("%s decoded as native=%q kind=%q, want %q/%q", tc.fixture, ev.NativeName, ev.Kind, tc.native, tc.kind)
 		}
-		// The label must stay ProviderCopilot: it selects the CLI's flat
+		// The label must stay ProviderCopilotCLI: it selects the CLI's flat
 		// response schema downstream.
-		if ev.Provider != ProviderCopilot {
-			t.Errorf("%s provider = %q, want %q", tc.fixture, ev.Provider, ProviderCopilot)
+		if ev.Provider != ProviderCopilotCLI {
+			t.Errorf("%s provider = %q, want %q", tc.fixture, ev.Provider, ProviderCopilotCLI)
 		}
 		if ev.Session.ID != "sess-claude-1" {
 			t.Errorf("%s session id = %q", tc.fixture, ev.Session.ID)

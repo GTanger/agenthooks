@@ -211,13 +211,13 @@ config, and an absent one already means match-all.
   Disable with `WithoutMCPResolution()` (everything) or
   `WithoutMCPListFallback()` (provider CLI probes).
 - Copilot ships **two dialects behind one name**: the CLI's camelCase wire
-  (`copilot`) and Copilot Chat in VS Code, which speaks the Claude-shaped
+  (`copilot-cli`) and Copilot Chat in VS Code, which speaks the Claude-shaped
   dialect (`vscode-copilot`). Both runtimes glob the same two hook
   directories, so the `vscode-copilot` file serves both — its PascalCase
   event keys are the CLI's Claude-compat mode, and the CLI's own `COPILOT_*`
-  env demotes the session to `copilot` before decode, so each runtime gets
+  env demotes the session to `copilot-cli` before decode, so each runtime gets
   its own capability row and response schema (VS Code nested, the CLI flat).
-  Install `vscode-copilot` for both runtimes (8 events) or `copilot` for 12
+  Install `vscode-copilot` for both runtimes (8 events) or `copilot-cli` for 12
   mapped CLI events; the CLI's two other native events currently decode only as
   `KindOther` and cannot be registered by generated configs. Installing both
   targets double-fires in the CLI. Cross-runtime

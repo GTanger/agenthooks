@@ -58,7 +58,7 @@ func TestCopilotEventFields(t *testing.T) {
 		rec := newRecorder(t, "")
 		home := copilotHome(t)
 		proj := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopeUser, home)
 		runCopilot(t, proj, home, shellMarkerPrompt("copilot-marker.txt"))
 		return rec, proj
 	})
@@ -92,7 +92,7 @@ func TestCopilotEventFields(t *testing.T) {
 	requireNoBackfill(t, evs)
 
 	for _, e := range ofKind(evs, agenthooks.KindSessionStart) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.SessionStart(ev)
 		if !ok {
 			t.Fatalf("SessionStart view rejected native %q", e.Native)
@@ -112,7 +112,7 @@ func TestCopilotEventFields(t *testing.T) {
 	}
 
 	for _, e := range ofKind(evs, agenthooks.KindSessionEnd) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.SessionEnd(ev)
 		if !ok {
 			t.Fatalf("SessionEnd view rejected native %q", e.Native)
@@ -129,7 +129,7 @@ func TestCopilotEventFields(t *testing.T) {
 		if e.Backfilled {
 			continue // no Raw to check: a backfill fabricates nothing
 		}
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.UserPromptSubmitted(ev)
 		if !ok {
 			t.Fatalf("UserPromptSubmitted view rejected native %q", e.Native)
@@ -143,7 +143,7 @@ func TestCopilotEventFields(t *testing.T) {
 	}
 
 	for _, e := range ofKind(evs, agenthooks.KindToolPre) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.PreToolUse(ev)
 		if !ok {
 			t.Fatalf("PreToolUse view rejected native %q", e.Native)
@@ -164,7 +164,7 @@ func TestCopilotEventFields(t *testing.T) {
 	}
 
 	for _, e := range ofKind(evs, agenthooks.KindToolPost) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.PostToolUse(ev)
 		if !ok {
 			t.Fatalf("PostToolUse view rejected native %q", e.Native)
@@ -180,7 +180,7 @@ func TestCopilotEventFields(t *testing.T) {
 	}
 
 	for _, e := range ofKind(evs, agenthooks.KindStop) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.AgentStop(ev)
 		if !ok {
 			t.Fatalf("AgentStop view rejected native %q", e.Native)
@@ -233,7 +233,7 @@ func TestCopilotToolFailure(t *testing.T) {
 		rec := newRecorder(t, "")
 		home := copilotHome(t)
 		proj := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopeUser, home)
 		runCopilot(t, proj, home, toolFailurePrompt())
 		return rec, proj
 	})
@@ -247,7 +247,7 @@ func TestCopilotToolFailure(t *testing.T) {
 	}
 	matchedViewFailure := false
 	for _, e := range ofKind(evs, agenthooks.KindToolError) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.PostToolUseFailure(ev)
 		if !ok {
 			t.Fatalf("PostToolUseFailure view rejected native %q", e.Native)
@@ -279,7 +279,7 @@ func TestCopilotModifiedArgs(t *testing.T) {
 		rec := newRecorderWithConfig(t, recorderConfig{RewriteCommand: "touch " + rewritten})
 		home := copilotHome(t)
 		proj := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopeUser, home)
 		runCopilot(t, proj, home, oneShotShellMarkerPrompt(original))
 		return rec, proj
 	})
@@ -315,7 +315,7 @@ func TestCopilotPluginScope(t *testing.T) {
 		home := copilotHome(t)
 		proj := t.TempDir()
 		pluginDir := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopePlugin, pluginDir)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopePlugin, pluginDir)
 		runCopilot(t, proj, home, oneShotShellMarkerPrompt(marker), "--plugin-dir", pluginDir)
 		return rec, proj
 	})
@@ -341,7 +341,7 @@ func TestCopilotDeny(t *testing.T) {
 		rec := newRecorder(t, string(agenthooks.ToolShell))
 		home := copilotHome(t)
 		proj := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopeUser, home)
 		runCopilot(t, proj, home, shellMarkerPrompt("denied-marker.txt"))
 		return rec, proj
 	})
@@ -364,7 +364,7 @@ func TestCopilotDeny(t *testing.T) {
 	// A blocked call may or may not produce a postToolUseFailure; when it
 	// does, the failure view has to hold up too.
 	for _, e := range ofKind(evs, agenthooks.KindToolError) {
-		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+		ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 		in, ok := copilot.PostToolUseFailure(ev)
 		if !ok {
 			t.Fatalf("PostToolUseFailure view rejected native %q", e.Native)
@@ -392,7 +392,7 @@ func TestCopilotDeny(t *testing.T) {
 //     simply never fires — so the recorded kinds are the answer. The t.Logf
 //     below is the output to read.
 //  2. The COPILOT_* demotion fires in a real CLI hook child. Every event must
-//     be stamped copilot, not vscode-copilot: the flag says vscode-copilot
+//     be stamped copilot-cli, not vscode-copilot: the flag says vscode-copilot
 //     and only the CLI's own env overrides it.
 //  3. The CLI honors a decision returned for a PascalCase registration, in
 //     the FLAT schema encodeCopilot emits. A body in VS Code's nested
@@ -433,8 +433,8 @@ func TestCopilotPascalCaseCompat(t *testing.T) {
 		t.Error("marker missing: shell command did not run under the PascalCase file")
 	}
 	for _, e := range evs {
-		if e.Provider != string(agenthooks.ProviderCopilot) {
-			t.Errorf("event %s stamped provider %q, want %q — the COPILOT_* demotion did not fire, so this session got VS Code's capability row and nested encoder", e.Native, e.Provider, agenthooks.ProviderCopilot)
+		if e.Provider != string(agenthooks.ProviderCopilotCLI) {
+			t.Errorf("event %s stamped provider %q, want %q — the COPILOT_* demotion did not fire, so this session got VS Code's capability row and nested encoder", e.Native, e.Provider, agenthooks.ProviderCopilotCLI)
 		}
 	}
 
@@ -485,7 +485,7 @@ func TestCopilotStopContinuation(t *testing.T) {
 		rec := newRecorderWithConfig(t, recorderConfig{ContinueInstruction: oneShotShellMarkerPrompt(continued)})
 		home := copilotHome(t)
 		proj := t.TempDir()
-		installHooks(t, rec, agenthooks.ProviderCopilot, install.ScopeUser, home)
+		installHooks(t, rec, agenthooks.ProviderCopilotCLI, install.ScopeUser, home)
 		runCopilot(t, proj, home, oneShotShellMarkerPrompt(first))
 		return rec, proj
 	})
@@ -542,7 +542,7 @@ func TestCopilotSubagentEvents(t *testing.T) {
 		provider          agenthooks.Provider
 		startName, opName string
 	}{
-		{"camelCase", agenthooks.ProviderCopilot, "subagentStart", "subagentStop"},
+		{"camelCase", agenthooks.ProviderCopilotCLI, "subagentStart", "subagentStop"},
 		{"pascalCase", agenthooks.ProviderVSCodeCopilot, "subagentStart", "SubagentStop"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -567,11 +567,11 @@ func TestCopilotSubagentEvents(t *testing.T) {
 					t.Errorf("subagent.stop native = %q, want %q — the CLI changed which dialect it sends for this registration", e.Native, tc.opName)
 				}
 			}
-			if tc.provider != agenthooks.ProviderCopilot {
+			if tc.provider != agenthooks.ProviderCopilotCLI {
 				return // views below are the camelCase wire only
 			}
 			for _, e := range ofKind(evs, agenthooks.KindSubagentStart) {
-				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 				in, ok := copilot.SubagentStart(ev)
 				if !ok {
 					t.Fatalf("SubagentStart view rejected native %q", e.Native)
@@ -586,7 +586,7 @@ func TestCopilotSubagentEvents(t *testing.T) {
 				}
 			}
 			for _, e := range ofKind(evs, agenthooks.KindSubagentStop) {
-				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 				in, ok := copilot.SubagentStop(ev)
 				if !ok {
 					t.Fatalf("SubagentStop view rejected native %q", e.Native)
@@ -623,7 +623,7 @@ func TestCopilotPreCompact(t *testing.T) {
 		provider agenthooks.Provider
 		native   string
 	}{
-		{"camelCase", agenthooks.ProviderCopilot, "preCompact"},
+		{"camelCase", agenthooks.ProviderCopilotCLI, "preCompact"},
 		{"pascalCase", agenthooks.ProviderVSCodeCopilot, "PreCompact"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -638,13 +638,13 @@ func TestCopilotPreCompact(t *testing.T) {
 				if e.Native != tc.native {
 					t.Errorf("compact.pre native = %q, want %q", e.Native, tc.native)
 				}
-				if e.Provider != string(agenthooks.ProviderCopilot) {
-					t.Errorf("compact.pre stamped provider %q, want %q", e.Provider, agenthooks.ProviderCopilot)
+				if e.Provider != string(agenthooks.ProviderCopilotCLI) {
+					t.Errorf("compact.pre stamped provider %q, want %q", e.Provider, agenthooks.ProviderCopilotCLI)
 				}
-				if tc.provider != agenthooks.ProviderCopilot {
+				if tc.provider != agenthooks.ProviderCopilotCLI {
 					continue // camelCase view only
 				}
-				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilot, NativeName: e.Native, Raw: e.Raw}
+				ev := &agenthooks.Event{Provider: agenthooks.ProviderCopilotCLI, NativeName: e.Native, Raw: e.Raw}
 				in, ok := copilot.PreCompact(ev)
 				if !ok {
 					t.Fatalf("PreCompact view rejected native %q", e.Native)

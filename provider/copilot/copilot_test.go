@@ -11,7 +11,7 @@ import (
 func event(t *testing.T, fixture, native string) *agenthooks.Event {
 	t.Helper()
 	return &agenthooks.Event{
-		Provider:   agenthooks.ProviderCopilot,
+		Provider:   agenthooks.ProviderCopilotCLI,
 		NativeName: native,
 		Raw:        json.RawMessage(agenthookstest.Fixture(t, "copilot/"+fixture)),
 	}
@@ -104,7 +104,7 @@ func TestToolArgumentShapes(t *testing.T) {
 	}
 
 	legacy := &agenthooks.Event{
-		Provider:   agenthooks.ProviderCopilot,
+		Provider:   agenthooks.ProviderCopilotCLI,
 		NativeName: "preToolUse",
 		Raw:        json.RawMessage(`{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{\"command\":\"echo hello-from-gram\"}"}`),
 	}
@@ -150,7 +150,7 @@ func TestViewsRejectMismatchedEvent(t *testing.T) {
 func TestPreToolUseViewWithExtraCapture(t *testing.T) {
 	raw := `{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{}","brand_new_field":"surprise"}`
 	e := &agenthooks.Event{
-		Provider:   agenthooks.ProviderCopilot,
+		Provider:   agenthooks.ProviderCopilotCLI,
 		NativeName: "preToolUse",
 		Raw:        json.RawMessage(raw),
 	}

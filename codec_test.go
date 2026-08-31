@@ -127,7 +127,7 @@ func TestDecodeClaudeShapedSkillBackfillsOnlyForClaudeCode(t *testing.T) {
 	}{
 		{ProviderClaudeCode, `"manifest"`},
 		{ProviderVSCodeCopilot, `"provider output"`},
-		{ProviderCopilot, `"provider output"`},
+		{ProviderCopilotCLI, `"provider output"`},
 	} {
 		typed, err := decodePayload(tc.provider, VariantUnknown, DetectionConfig, testNow, payload)
 		if err != nil {
