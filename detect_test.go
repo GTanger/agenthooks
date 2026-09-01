@@ -36,6 +36,20 @@ func TestParseArgsNoSentinel(t *testing.T) {
 	}
 }
 
+func TestDetectClaudeCodeMarker(t *testing.T) {
+	for _, v := range []string{
+		"CURSOR_VERSION", "CURSOR_TRACE_ID", "CURSOR_AGENT", "CODEX_HOME", "CODEX_SANDBOX",
+		"GEMINI_CWD", "GEMINI_CLI", "OPENCODE_SERVER", "OPENCODE", "COPILOT_CLI",
+		"COPILOT_PLUGIN_ROOT", "COPILOT_PLUGIN_DATA", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT",
+	} {
+		t.Setenv(v, "")
+	}
+	t.Setenv("CLAUDECODE", "1")
+	if got, ok := detectFromEnv(); !ok || got != ProviderClaudeCode {
+		t.Errorf("CLAUDECODE=1 detection = %q, %v; want %q, true", got, ok, ProviderClaudeCode)
+	}
+}
+
 // One installed file, two runtimes. --provider=vscode-copilot is the default
 // the Copilot CLI overrides with its own env; VS Code sets no marker, so its
 // absence is the only signal available and it has to mean "leave the flag

@@ -136,7 +136,7 @@ func detectFromEnv() (Provider, bool) {
 	if copilotCLIEnv() {
 		return ProviderCopilotCLI, true
 	}
-	if os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
+	if os.Getenv("CLAUDECODE") == "1" || os.Getenv("CLAUDE_PROJECT_DIR") != "" || os.Getenv("CLAUDE_PLUGIN_ROOT") != "" {
 		return ProviderClaudeCode, true
 	}
 	return "", false
