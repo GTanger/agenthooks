@@ -388,31 +388,46 @@ func requireStableMoltisToolID(t *testing.T, evs []event) {
 
 func requireMoltisMessageLifecycle(t *testing.T, evs []event) {
 	t.Helper()
-	sendingIndex, sentIndex := -1, -1
-	sendingContent, sentContent := "", ""
+	type lifecycleEvent struct {
+		index      int
+		native     string
+		sessionKey string
+		content    string
+	}
+	var lifecycle []lifecycleEvent
 	for i, event := range evs {
 		if event.Typed || (event.Native != "MessageSending" && event.Native != "MessageSent") {
 			continue
 		}
 		var payload struct {
-			Content string `json:"content"`
+			SessionKey string `json:"session_key"`
+			Content    string `json:"content"`
 		}
 		if err := json.Unmarshal(event.Raw, &payload); err != nil {
 			t.Fatalf("decode Moltis %s payload: %v", event.Native, err)
 		}
-		if event.Native == "MessageSending" {
-			sendingIndex, sendingContent = i, payload.Content
-		} else {
-			sentIndex, sentContent = i, payload.Content
+		if payload.SessionKey == "" || payload.Content == "" {
+			t.Fatalf("Moltis %s payload lacks session/content correlation: %s", event.Native, event.Raw)
+		}
+		lifecycle = append(lifecycle, lifecycleEvent{
+			index:      i,
+			native:     event.Native,
+			sessionKey: payload.SessionKey,
+			content:    payload.Content,
+		})
+	}
+	for _, sent := range lifecycle {
+		if sent.native != "MessageSent" {
+			continue
+		}
+		for _, sending := range lifecycle {
+			if sending.native == "MessageSending" &&
+				sending.index < sent.index &&
+				sending.sessionKey == sent.sessionKey &&
+				sending.content == sent.content {
+				return
+			}
 		}
 	}
-	if sendingIndex < 0 || sentIndex < 0 {
-		t.Fatalf("missing Moltis outbound lifecycle events: sending=%d sent=%d", sendingIndex, sentIndex)
-	}
-	if sendingIndex >= sentIndex {
-		t.Fatalf("Moltis MessageSending must precede MessageSent: sending=%d sent=%d", sendingIndex, sentIndex)
-	}
-	if sendingContent == "" || sentContent != sendingContent {
-		t.Fatalf("Moltis outbound content mismatch: sending=%q sent=%q", sendingContent, sentContent)
-	}
+	t.Fatalf("no Moltis MessageSending event had a later matching MessageSent event: %+v", lifecycle)
 }
