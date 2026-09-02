@@ -74,6 +74,7 @@ type recorderConfig struct {
 	Deny                string `json:"deny,omitempty"`
 	RewriteCommand      string `json:"rewrite_command,omitempty"`
 	ContinueInstruction string `json:"continue_instruction,omitempty"`
+	PromptContext       string `json:"prompt_context,omitempty"`
 }
 
 // newRecorder links the recorder binary into a per-test directory and writes
@@ -97,6 +98,12 @@ func newRecorderWithConfig(t *testing.T, config recorderConfig) recorder {
 		}
 	}
 	rec := recorder{Bin: bin, Events: filepath.Join(dir, "events.jsonl")}
+	setRecorderConfig(t, rec, config)
+	return rec
+}
+
+func setRecorderConfig(t *testing.T, rec recorder, config recorderConfig) {
+	t.Helper()
 	cfg, err := json.Marshal(struct {
 		Out string `json:"out"`
 		recorderConfig
@@ -104,10 +111,9 @@ func newRecorderWithConfig(t *testing.T, config recorderConfig) recorder {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bin+".e2e.json", cfg, 0o644); err != nil {
+	if err := os.WriteFile(rec.Bin+".e2e.json", cfg, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return rec
 }
 
 // manifest is the standard hook subscription the suite installs everywhere.

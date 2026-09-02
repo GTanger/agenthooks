@@ -31,6 +31,10 @@ type config struct {
 	// continuation guard (stop_hook_active) would otherwise loop forever,
 	// and the library cap only trips on a reported LoopCount.
 	ContinueInstruction string `json:"continue_instruction,omitempty"`
+	// PromptContext is added through the provider's prompt-submitted decision
+	// channel. E2E tests use it to prove the native runtime honors context, not
+	// merely that the codec serialized a response.
+	PromptContext string `json:"prompt_context,omitempty"`
 }
 
 // record is one JSONL line. Kind "tool.pre" lines are emitted twice: once by
@@ -90,7 +94,11 @@ func main() {
 			Session:    e.Session.ID,
 			Prompt:     e.Prompt,
 		})
-		return agenthooks.AcceptPrompt(), nil
+		decision := agenthooks.AcceptPrompt()
+		if cfg.PromptContext != "" {
+			decision = decision.WithContext(cfg.PromptContext)
+		}
+		return decision, nil
 	})
 	r.OnToolPre(func(_ context.Context, e *agenthooks.ToolPreEvent) (agenthooks.ToolPreDecision, error) {
 		denied := cfg.Deny != "" && string(e.Tool.Canonical) == cfg.Deny

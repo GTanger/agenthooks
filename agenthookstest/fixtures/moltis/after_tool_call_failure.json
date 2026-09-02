@@ -1,0 +1,9 @@
+{
+  "event": "AfterToolCall",
+  "session_key": "chat:main",
+  "tool_name": "exec",
+  "success": false,
+  "result": {
+    "error": "permission denied"
+  }
+}

@@ -93,6 +93,8 @@ func Render(m Manifest, t Target) (fs.FS, error) {
 		return renderOpenCode(m, t)
 	case agenthooks.ProviderOpenClaw:
 		return renderOpenClaw(m, t)
+	case agenthooks.ProviderMoltis:
+		return renderMoltis(m, t)
 	case agenthooks.ProviderKimi:
 		return renderKimi(m, t)
 	case agenthooks.ProviderCopilotCLI:
@@ -383,7 +385,7 @@ func shellQuoteBody(s string) string {
 		}
 		return s
 	}
-	if strings.ContainsAny(s, " \t\n\"'\\$&|<>(){}#~`!") {
+	if strings.ContainsAny(s, " \t\n\"'\\$&|;<>(){}#~`!") {
 		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 	}
 	return s

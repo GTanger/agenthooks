@@ -1,0 +1,7 @@
+{
+  "event": "AgentEnd",
+  "session_key": "chat:main",
+  "text": "finished",
+  "iterations": 3,
+  "tool_calls": 2
+}

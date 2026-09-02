@@ -40,6 +40,15 @@ func readRendered(t *testing.T, fsys fs.FS, path string) []byte {
 	return b
 }
 
+func TestShellQuoteBodyQuotesCommandSeparators(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell quoting assertion")
+	}
+	if got, want := shellQuoteBody("names=read;canonical=shell"), "'names=read;canonical=shell'"; got != want {
+		t.Fatalf("shellQuoteBody() = %q, want %q", got, want)
+	}
+}
+
 type claudeConfig struct {
 	Hooks map[string][]struct {
 		Matcher string `json:"matcher"`
