@@ -378,12 +378,19 @@ func requireStableMoltisToolID(t *testing.T, evs []event) {
 			postIDs[payload.ToolCallID] = true
 		}
 	}
+	if len(preIDs) == 0 || len(postIDs) == 0 {
+		t.Fatalf("missing Moltis tool lifecycle IDs; pre=%v post=%v", preIDs, postIDs)
+	}
 	for id := range preIDs {
-		if postIDs[id] {
-			return
+		if !postIDs[id] {
+			t.Fatalf("Moltis BeforeToolCall ID %q has no matching AfterToolCall; pre=%v post=%v", id, preIDs, postIDs)
 		}
 	}
-	t.Fatalf("no Moltis BeforeToolCall/AfterToolCall pair shared an ID; pre=%v post=%v", preIDs, postIDs)
+	for id := range postIDs {
+		if !preIDs[id] {
+			t.Fatalf("Moltis AfterToolCall ID %q has no matching BeforeToolCall; pre=%v post=%v", id, preIDs, postIDs)
+		}
+	}
 }
 
 func requireMoltisMessageLifecycle(t *testing.T, evs []event) {

@@ -122,7 +122,7 @@ func TestChannelBindingPreservesUnknownNestedFields(t *testing.T) {
 	}
 }
 
-func TestToolLifecycleViewsExposeStableCallID(t *testing.T) {
+func TestToolLifecycleViewsDecodeForwardCompatibleCallID(t *testing.T) {
 	tests := []struct {
 		native string
 		raw    string
