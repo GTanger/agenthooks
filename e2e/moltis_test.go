@@ -39,7 +39,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 	configDir := t.TempDir()
 	dataDir := t.TempDir()
 	rec := newRecorderWithConfig(t, recorderConfig{
-		PromptContext: "Portable context marker: AGENTHOOKS_MOLTIS_CONTEXT_OK",
+		PromptContext: "Portable context marker: AGENTHOOKS_SHARED_CONTEXT_OK",
 	})
 	installHooks(t, rec, agenthooks.ProviderMoltis, install.ScopeUser, dataDir)
 
@@ -62,7 +62,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 	postGraphQL(t, client, port,
 		"mutation($message:String!,$session:String!,$model:String){chat{send(message:$message,sessionKey:$session,model:$model){ok}}}",
 		map[string]any{
-			"message": "Use the exec tool once to run exactly `touch " + allowed + "`, then stop. Include any portable context marker appended to this message in the final answer.",
+			"message": portableContextShellPrompt(allowed),
 			"session": "agenthooks-e2e-allow",
 			"model":   model,
 		})
@@ -70,7 +70,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 		return fileExists(allowed) && fileContains(rec.Events, `"native":"AfterToolCall"`)
 	}, "allowed tool.post", logPath)
 	waitMoltis(t, 2*time.Minute, func() bool {
-		return moltisHistoryContains(client, port, "agenthooks-e2e-allow", "assistant", "AGENTHOOKS_MOLTIS_CONTEXT_OK")
+		return moltisHistoryContains(client, port, "agenthooks-e2e-allow", "assistant", "AGENTHOOKS_SHARED_CONTEXT_OK")
 	}, "prompt context in the model response", logPath)
 	evs := rec.events(t)
 	requireKinds(t, evs, agenthooks.KindPromptSubmitted, agenthooks.KindToolPre, agenthooks.KindToolPost)

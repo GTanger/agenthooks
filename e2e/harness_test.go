@@ -336,6 +336,14 @@ func oneShotShellMarkerPrompt(markerName string) string {
 		"checking the file or retrying the command, regardless of the result."
 }
 
+// portableContextShellPrompt is shared by the Codex and Moltis canaries.
+// Keeping the wording identical makes their context/tool receipts a meaningful
+// cross-provider comparison instead of two unrelated demos.
+func portableContextShellPrompt(markerPath string) string {
+	return "Use your shell execution tool once to run exactly `touch " + markerPath +
+		"`, then stop. Include any portable context marker appended to this message in the final answer."
+}
+
 // shellMarkerPrompt instructs the agent to run one exact shell command that
 // creates markerName in the working directory. Used both for the allow path
 // (marker must exist) and the deny path (marker must not exist). The framing
