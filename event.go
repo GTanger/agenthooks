@@ -21,7 +21,10 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenClaw   Provider = "openclaw"  // OpenClaw Gateway (typed plugin hooks via shim)
 	ProviderKimi       Provider = "kimi-code" // Kimi Code CLI ("kimi" accepted as a flag alias)
-	ProviderCopilot    Provider = "copilot"   // GitHub Copilot CLI (hooks are CLI-only)
+	// Copilot ships two dialects behind one product name, so a consumer
+	// switching on "is this Copilot?" must consider both constants.
+	ProviderCopilotCLI    Provider = "copilot-cli"    // GitHub Copilot CLI (camelCase dialect)
+	ProviderVSCodeCopilot Provider = "vscode-copilot" // Copilot Chat in VS Code (Claude-shaped dialect)
 )
 
 // Variant refines Provider where runtime behavior genuinely differs.
@@ -207,27 +210,66 @@ var canonicalNames = map[string]CanonicalTool{
 	"bash": ToolShell, "shell": ToolShell, "run_shell_command": ToolShell,
 	"run_terminal_cmd": ToolShell, "exec": ToolShell, "local_shell": ToolShell,
 	"terminal": ToolShell,
+	// VS Code Copilot Chat, enumerated from the extension's wire-name table
+	// (not its package.json, which registers different names). Everything here
+	// executes an arbitrary command or arbitrary code, so a deny-shell policy
+	// that missed any of them would have a hole.
+	//
+	// Deliberately NOT shell, having no execution of their own: the read-only
+	// get_terminal_output / get_task_output / terminal_selection /
+	// terminal_last_command, the kill_terminal control, and run_vscode_command
+	// — which can reach a terminal command indirectly, but classing the whole
+	// command palette as shell would make an allow-shell policy far too broad.
+	"run_in_terminal": ToolShell, "send_to_terminal": ToolShell,
+	"run_task": ToolShell, "create_and_run_task": ToolShell,
+	"runtests": ToolShell, "run_notebook_cell": ToolShell,
+	"run_playwright_code": ToolShell,
 
 	"read": ToolFileRead, "read_file": ToolFileRead, "readfile": ToolFileRead,
 	"view_file": ToolFileRead, "read_many_files": ToolFileRead, "notebookread": ToolFileRead,
+	// The Copilot CLI names its file tools with bare verbs no other provider
+	// uses: `view` reads a path and `create` writes one ({path, file_text}).
+	// Neither matched anything above, so a deny-file-read or deny-file-write
+	// policy silently covered nothing on that CLI.
+	"view": ToolFileRead,
 
 	"write": ToolFileWrite, "write_file": ToolFileWrite, "writefile": ToolFileWrite,
 	"create_file": ToolFileWrite, "save_file": ToolFileWrite,
+	"create": ToolFileWrite,
 
 	"edit": ToolFileEdit, "multiedit": ToolFileEdit, "apply_patch": ToolFileEdit,
 	"replace": ToolFileEdit, "edit_file": ToolFileEdit, "notebookedit": ToolFileEdit,
 	"str_replace": ToolFileEdit, "search_replace": ToolFileEdit, "patch": ToolFileEdit,
-	"strreplacefile": ToolFileEdit,
+	"strreplacefile":         ToolFileEdit,
+	"replace_string_in_file": ToolFileEdit, "multi_replace_string_in_file": ToolFileEdit,
+	"insert_edit_into_file": ToolFileEdit, "edit_notebook_file": ToolFileEdit,
+	"edit_files": ToolFileEdit,
 
 	"grep": ToolSearch, "glob": ToolSearch, "search": ToolSearch,
 	"codebase_search": ToolSearch, "search_file_content": ToolSearch,
 	"find_files": ToolSearch, "list_directory": ToolSearch, "ls": ToolSearch,
 	"glob_file_search": ToolSearch, "grep_search": ToolSearch, "file_search": ToolSearch,
+	"list_dir": ToolSearch, "semantic_search": ToolSearch,
+	"search_workspace_symbols": ToolSearch, "test_search": ToolSearch,
+	"github_repo": ToolSearch, "github_text_search": ToolSearch,
+	"read_project_structure": ToolSearch,
 
 	"webfetch": ToolFetch, "web_fetch": ToolFetch, "websearch": ToolFetch,
 	"web_search": ToolFetch, "fetch": ToolFetch, "google_web_search": ToolFetch,
+	"fetch_webpage": ToolFetch,
+	// VS Code's browser tools, split by what they actually do: these four pull
+	// external content into the session, which is what a deny-fetch policy is
+	// for. The rest of the suite — click_element, type_in_page, hover_element,
+	// drag_element, handle_dialog — only manipulates an already-open page and
+	// stays ToolOther. (run_playwright_code executes code, so it is shell.)
+	"open_browser_page": ToolFetch, "navigate_page": ToolFetch,
+	"read_page": ToolFetch, "screenshot_page": ToolFetch,
 
 	"task": ToolTask, "agent": ToolTask, "subagent": ToolTask,
+	// VS Code spells its four subagent tools distinctly; none matched the
+	// generic names above, so a ToolTask matcher saw no VS Code subagent.
+	"runsubagent": ToolTask, "search_subagent": ToolTask,
+	"explore_subagent": ToolTask, "execution_subagent": ToolTask,
 }
 
 // CanonicalToolFor classifies a native tool name. MCP names (any dialect)
@@ -243,8 +285,8 @@ func CanonicalToolFor(name string) CanonicalTool {
 }
 
 // ParseMCPName decodes the three MCP tool-name dialects:
-// mcp__server__tool (Claude/Codex), mcp_server_tool (Gemini, best-effort
-// since "_" is ambiguous), and MCP:tool (Cursor, server unknown).
+// mcp__server__tool (Claude/Codex), mcp_server_tool (Gemini/VS Code,
+// best-effort since "_" is ambiguous), and MCP:tool (Cursor, server unknown).
 // It returns nil when the name is not MCP-shaped.
 func ParseMCPName(name string) *MCPCall {
 	switch {

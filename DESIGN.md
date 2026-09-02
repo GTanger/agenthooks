@@ -2,7 +2,7 @@
 
 A Go library for authoring coding-agent hooks once and running them everywhere:
 Claude Code, Cursor (IDE + CLI + cloud), OpenAI Codex, Gemini CLI, OpenCode,
-Kimi Code, and GitHub Copilot CLI.
+OpenClaw, Kimi Code, GitHub Copilot CLI, and Copilot Chat in VS Code.
 
 The core promise: **one clear interface, zero data-fidelity loss**. The library
 owns the per-provider glue, hacks, and workarounds so consumers don't have to.
@@ -43,6 +43,20 @@ the exit code: it always exits 0 and encodes the verdict on stdout, which stops
 a crashed hook from denying every tool call. `prompt.submitted` gets an empty
 capability set because Copilot discards command-hook output for
 `userPromptSubmitted`.)
+
+(**Copilot Chat in VS Code** is a ninth provider and a *second Copilot
+dialect*, not a surface of the first: its wire shape is Claude Code's —
+snake_case stdin, PascalCase event names, `hookSpecificOutput` response — so
+both codecs delegate to the Claude ones and the distinct constant exists for
+the capability row and the config renderer. It fires 8 of the CLI's 14 events,
+parses `matcher` values and then ignores them, and injects no environment
+marker into the hook child, so detection is flag-only. Two placements diverge
+from Claude Code and are fixed up in `encodeVSCode`: `decision`/`reason` ride
+*inside* `hookSpecificOutput` on `Stop`/`SubagentStop`, and `SubagentStart`
+honors `additionalContext`, which Claude Code does not. The capability row was
+read out of the extension source rather than the reference, which contradicts
+itself on both the nesting and the timeout key — see quirk registry entries
+#42–#49.)
 
 Consequence: the unified contract should be **Claude-shaped semantics with
 typed extensions**, not a lowest-common-denominator invention. Three of five
@@ -610,6 +624,19 @@ Per-target rendering encodes the workaround knowledge:
   `command` is emitted, never `bash`/`powershell`: Copilot copies `command`
   into both when absent. No `failClosed` knob either — Copilot fixes the
   posture per event (`preToolUse` fail-closed, everything else fail-open).
+- **VS Code Copilot Chat**: `agenthooks-vscode.json` with PascalCase event
+  keys, at `<~/.copilot>/hooks/` (user) or `.github/hooks/` (project); no
+  plugin scope. Both directories are globbed by the Copilot CLI *as well*, so
+  the distinct basename is what keeps this file from colliding with the CLI's
+  — and, being neither `settings.json` nor `hooks.json`, it is whole-file
+  owned rather than merged. Four omissions, each preventing a silent failure:
+  no `matcher` (VS Code parses matchers and ignores them, so `--filter` on the
+  argv is the only real enforcement), no `version` (absent from every VS Code
+  example; an unknown key is a schema-validation risk for zero benefit), no
+  `bash`/`powershell` (VS Code's split is `windows`/`linux`/`osx`, and the
+  rendered argv is valid in every shell), and **both** `timeout` and
+  `timeoutSec` at the same value, because the reference table names one and a
+  usage example on the same doc set names the other.
 
 Matchers: `ToolMatcher` compiles to the provider dialect where expressible
 (Claude regex/exact-list rules incl. the hyphen/comma version gates, Gemini
@@ -690,7 +717,8 @@ upstream reference. Seeded from provider research and production observation:
 
 The table below is the initially seeded set; `quirks.go` is the authoritative
 registry and has grown past it (entries #21+, including the OpenClaw rows
-#34–#37).
+#34–#37, the Copilot CLI dialect rows #38–#41, and the VS Code Copilot Chat
+rows #42–#49).
 
 | # | Quirk | Mitigation |
 |---|---|---|

@@ -11,7 +11,7 @@ import (
 func event(t *testing.T, fixture, native string) *agenthooks.Event {
 	t.Helper()
 	return &agenthooks.Event{
-		Provider:   agenthooks.ProviderCopilot,
+		Provider:   agenthooks.ProviderCopilotCLI,
 		NativeName: native,
 		Raw:        json.RawMessage(agenthookstest.Fixture(t, "copilot/"+fixture)),
 	}
@@ -82,22 +82,42 @@ func TestViewsDecodeRecordedPayloads(t *testing.T) {
 }
 
 // The one wire quirk the views deliberately expose rather than smooth over:
-// toolArgs is a JSON-encoded STRING on pre/postToolUse while permissionRequest
-// ships a plain object in toolInput. Typing either one wrong makes the view
-// fail to decode at all.
+// toolArgs is the one field whose shape moved under the same name: a
+// JSON-encoded STRING through CLI 1.0.80, a plain object from 1.0.81.
+// permissionRequest's toolInput was an object throughout. A view typed to one
+// toolArgs shape returns ok=false for the other, and callers keyed on ok then
+// do nothing at all — so both shapes are asserted here, against the recorded
+// corpus (current) and an inline legacy payload (1.0.80).
 func TestToolArgumentShapes(t *testing.T) {
-	pre, ok := PreToolUse(event(t, "pre_tool_use.json", "preToolUse"))
-	if !ok {
-		t.Fatal("PreToolUse did not decode; toolArgs must be a string, not an object")
-	}
 	var args struct {
 		Command string `json:"command"`
 	}
-	if err := json.Unmarshal([]byte(pre.ToolArgs), &args); err != nil {
-		t.Fatalf("toolArgs is not a JSON-encoded string: %q", pre.ToolArgs)
+	pre, ok := PreToolUse(event(t, "pre_tool_use.json", "preToolUse"))
+	if !ok {
+		t.Fatal("PreToolUse did not decode the recorded 1.0.81 payload; toolArgs must stay raw")
+	}
+	if err := json.Unmarshal(pre.ToolArgs, &args); err != nil {
+		t.Fatalf("toolArgs is not a plain object: %s", pre.ToolArgs)
 	}
 	if args.Command != "echo hello-from-gram" {
 		t.Errorf("command = %q", args.Command)
+	}
+
+	legacy := &agenthooks.Event{
+		Provider:   agenthooks.ProviderCopilotCLI,
+		NativeName: "preToolUse",
+		Raw:        json.RawMessage(`{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{\"command\":\"echo hello-from-gram\"}"}`),
+	}
+	old, ok := PreToolUse(legacy)
+	if !ok {
+		t.Fatal("PreToolUse rejected the 1.0.80 double-encoded payload; an older CLI must still decode")
+	}
+	var inner string
+	if err := json.Unmarshal(old.ToolArgs, &inner); err != nil {
+		t.Fatalf("legacy toolArgs did not survive as a JSON string: %s", old.ToolArgs)
+	}
+	if err := json.Unmarshal([]byte(inner), &args); err != nil || args.Command != "echo hello-from-gram" {
+		t.Errorf("legacy toolArgs inner object = %q (%v)", inner, err)
 	}
 
 	perm, ok := PermissionRequest(event(t, "permission_request.json", "permissionRequest"))
@@ -130,7 +150,7 @@ func TestViewsRejectMismatchedEvent(t *testing.T) {
 func TestPreToolUseViewWithExtraCapture(t *testing.T) {
 	raw := `{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{}","brand_new_field":"surprise"}`
 	e := &agenthooks.Event{
-		Provider:   agenthooks.ProviderCopilot,
+		Provider:   agenthooks.ProviderCopilotCLI,
 		NativeName: "preToolUse",
 		Raw:        json.RawMessage(raw),
 	}

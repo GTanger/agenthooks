@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -74,8 +75,8 @@ func (r *Runner) resolveMCPWithOpenCodeInventory(ctx context.Context, typed any,
 	// Copilot branches here rather than in resolveMCPProvider's switch: that
 	// path only enriches a tc.MCP the codec already built, and Copilot's
 	// unmarked <server>-<tool> names leave it nil, so it would return early.
-	if base.Provider == ProviderCopilot {
-		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilot, base.Session.CWD))
+	if base.Provider == ProviderCopilotCLI {
+		r.resolveCopilotMCP(tc, loadMCPConfigEntries(ProviderCopilotCLI, base.Session.CWD))
 		return
 	}
 	r.resolveMCPProvider(ctx, typed)
@@ -120,6 +121,12 @@ func (r *Runner) resolveMCPProvider(ctx context.Context, typed any) {
 		// is ambiguous whenever the server name contains "_" (quirk #15), so
 		// match configured names longest-first.
 		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", verbatimMCPName)
+	case ProviderVSCodeCopilot:
+		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
+		// VS Code uses mcp_<server>_<tool> and truncates its sanitized
+		// server prefix. Colliding runtime-assigned numeric suffixes remain
+		// unresolved because their assignment depends on registration order.
+		matched, server, tool = matchSanitizedPrefix(entries, tc.Name, "mcp_", "_", vscodeSanitizeMCPName)
 	case ProviderCursor:
 		entries := loadMCPConfigEntries(base.Provider, base.Session.CWD)
 		if tc.MCP.Server != "" {
@@ -340,6 +347,19 @@ func verbatimMCPName(name string) string {
 	return strings.ReplaceAll(name, " ", "_")
 }
 
+var vscodeUnsafeMCPName = regexp.MustCompile(`[^a-z0-9_.-]+`)
+
+// vscodeSanitizeMCPName mirrors VS Code's McpPrefixGenerator. The full MCP
+// prefix is capped at 18 characters: "mcp_", at most 13 server characters,
+// then "_" before the tool name.
+func vscodeSanitizeMCPName(name string) string {
+	s := vscodeUnsafeMCPName.ReplaceAllString(strings.ToLower(name), "_")
+	if len(s) > 13 {
+		s = s[:13]
+	}
+	return s
+}
+
 // loadMCPConfigEntries reads the provider's MCP server config files. Missing
 // or malformed files contribute nothing. More specific scopes come first and
 // win name collisions (project over user).
@@ -400,7 +420,7 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		if home != "" {
 			groups = append(groups, readMCPServersJSON(filepath.Join(home, ".kimi", "mcp.json")))
 		}
-	case ProviderCopilot:
+	case ProviderCopilotCLI:
 		// Workspace scope first: Copilot auto-loads .mcp.json and
 		// .github/mcp.json from the repo and those win name collisions against the
 		// user-scope file. COPILOT_HOME overrides the user directory
@@ -419,6 +439,12 @@ func loadMCPConfigEntries(p Provider, cwd string) []mcpConfigEntry {
 		}
 		if dir != "" {
 			groups = append(groups, readMCPServersJSON(filepath.Join(dir, "mcp-config.json")))
+		}
+	case ProviderVSCodeCopilot:
+		if cwd != "" {
+			groups = append(groups,
+				readVSCodeMCPJSON(filepath.Join(cwd, ".vscode", "mcp.json")),
+				readMCPServersJSON(filepath.Join(cwd, ".mcp.json")))
 		}
 	case ProviderOpenCode:
 		// opencode.json(c) at project root; global config under
@@ -470,6 +496,20 @@ func parseMCPServersJSON(data []byte) []mcpConfigEntry {
 		return nil
 	}
 	return mcpEntriesFromJSON(doc.MCPServers)
+}
+
+func readVSCodeMCPJSON(path string) []mcpConfigEntry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Servers map[string]mcpServerJSON `json:"servers"`
+	}
+	if err := json.Unmarshal(stripJSONCComments(data), &doc); err != nil {
+		return nil
+	}
+	return mcpEntriesFromJSON(doc.Servers)
 }
 
 func firstMCPEntries(groups ...[]mcpConfigEntry) []mcpConfigEntry {
@@ -587,9 +627,9 @@ func openCodeMCPEntries(servers map[string]opencodeMCPJSON) []mcpConfigEntry {
 	return out
 }
 
-// stripJSONCComments blanks // and /* */ comments (string-aware) so the
-// stdlib JSON decoder accepts .jsonc config files. Byte positions are
-// preserved by replacing comment bytes with spaces.
+// stripJSONCComments blanks // and /* */ comments plus trailing commas
+// (string-aware) so the stdlib JSON decoder accepts .jsonc config files. Byte
+// positions are preserved by replacing removed syntax with spaces.
 func stripJSONCComments(data []byte) []byte {
 	out := make([]byte, len(data))
 	copy(out, data)
@@ -628,6 +668,32 @@ func stripJSONCComments(data []byte) []byte {
 			out[i], out[i+1] = ' ', ' '
 			i++
 			inBlock = true
+		}
+	}
+
+	// JSONC permits a comma before a closing object or array delimiter. Comments
+	// are spaces now, so a second string-aware pass can inspect the next
+	// non-whitespace byte without needing to understand comment boundaries.
+	inStr = false
+	for i := 0; i < len(out); i++ {
+		switch out[i] {
+		case '\\':
+			if inStr {
+				i++
+			}
+		case '"':
+			inStr = !inStr
+		case ',':
+			if inStr {
+				continue
+			}
+			j := i + 1
+			for j < len(out) && (out[j] == ' ' || out[j] == '\t' || out[j] == '\r' || out[j] == '\n') {
+				j++
+			}
+			if j < len(out) && (out[j] == '}' || out[j] == ']') {
+				out[i] = ' '
+			}
 		}
 	}
 	return out

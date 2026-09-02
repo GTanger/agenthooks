@@ -71,8 +71,9 @@ type recorder struct {
 }
 
 type recorderConfig struct {
-	Deny           string `json:"deny,omitempty"`
-	RewriteCommand string `json:"rewrite_command,omitempty"`
+	Deny                string `json:"deny,omitempty"`
+	RewriteCommand      string `json:"rewrite_command,omitempty"`
+	ContinueInstruction string `json:"continue_instruction,omitempty"`
 }
 
 // newRecorder links the recorder binary into a per-test directory and writes
@@ -121,6 +122,11 @@ func manifest(bin string) install.Manifest {
 			{Kind: agenthooks.KindToolPost, Blocking: true, Timeout: 30 * time.Second},
 			{Kind: agenthooks.KindToolError, Blocking: true, Timeout: 30 * time.Second},
 			{Kind: agenthooks.KindStop, Blocking: true, Timeout: 30 * time.Second},
+			// Registered everywhere, driven only where a headless turn can
+			// reach them; renderers skip the kinds a provider has no event for.
+			{Kind: agenthooks.KindSubagentStart, Blocking: true, Timeout: 30 * time.Second},
+			{Kind: agenthooks.KindSubagentStop, Blocking: true, Timeout: 30 * time.Second},
+			{Kind: agenthooks.KindCompactPre, Blocking: true, Timeout: 30 * time.Second},
 		},
 		Identity: install.Identity{Name: "agenthooks-e2e", Version: "0.0.1", Description: "agenthooks e2e recorder"},
 		Fail:     agenthooks.FailOpen,
@@ -198,7 +204,11 @@ type event struct {
 	Prompt     string          `json:"prompt"`
 	Denied     bool            `json:"denied"`
 	Rewritten  bool            `json:"rewritten"`
-	Raw        json.RawMessage `json:"raw"`
+
+	Continued     bool            `json:"continued"`
+	PrevContinued bool            `json:"prev_continued"`
+	LoopCount     int             `json:"loop_count"`
+	Raw           json.RawMessage `json:"raw"`
 }
 
 // events reads the recorder's sink; missing file means no events (yet).

@@ -313,6 +313,10 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 
 	provider, conf := detectProvider(inv, payload)
+	// The generated vscode-copilot file is loaded by the Copilot CLI too; when
+	// the CLI is the runtime, its own env demotes the flag so the session gets
+	// the CLI's capability row and flat response schema.
+	provider = demoteVSCodeToCLI(provider)
 	if provider == "" {
 		r.logger.Error("agenthooks: cannot detect provider; emitting neutral no-op", "payload_bytes", len(payload))
 		_, _ = fmt.Fprint(stdout, "{}")

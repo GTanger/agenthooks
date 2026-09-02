@@ -925,7 +925,7 @@ func TestResolveMCPCopilotDetection(t *testing.T) {
 	}`)
 	r := mcpTestRunner(t)
 
-	ev := mcpToolPre(ProviderCopilot, "", "github-create_issue")
+	ev := mcpToolPre(ProviderCopilotCLI, "", "github-create_issue")
 	if ev.Tool.MCP != nil || ev.Tool.Canonical == ToolMCP {
 		t.Fatalf("precondition: codec must not classify copilot MCP names: %+v", ev.Tool)
 	}
@@ -938,7 +938,7 @@ func TestResolveMCPCopilotDetection(t *testing.T) {
 		t.Errorf("copilot identity/transport wrong: %+v", ev.Tool.MCP)
 	}
 
-	ev = mcpToolPre(ProviderCopilot, "", "tracker-list_issues")
+	ev = mcpToolPre(ProviderCopilotCLI, "", "tracker-list_issues")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" || ev.Tool.MCP.Tool != "list_issues" {
 		t.Errorf("copilot remote server wrong: %+v", ev.Tool.MCP)
@@ -946,13 +946,13 @@ func TestResolveMCPCopilotDetection(t *testing.T) {
 
 	// Hyphenated native tool with no matching server: stays native. This is
 	// the boundary that keeps the "-" separator usable at all.
-	ev = mcpToolPre(ProviderCopilot, "", "read-file")
+	ev = mcpToolPre(ProviderCopilotCLI, "", "read-file")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP != nil {
 		t.Errorf("unconfigured hyphenated native tool must not detect: %+v", ev.Tool.MCP)
 	}
 
-	ev = mcpToolPre(ProviderCopilot, "", "shell")
+	ev = mcpToolPre(ProviderCopilotCLI, "", "shell")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP != nil || ev.Tool.Canonical != ToolShell {
 		t.Errorf("native copilot tool must stay native: %+v", ev.Tool)
@@ -969,7 +969,7 @@ func TestResolveMCPCopilotHyphenCollision(t *testing.T) {
 	writeConfig(t, filepath.Join(home, ".copilot", "mcp-config.json"), `{
 		"mcpServers": {"read": {"url": "https://read.example.com/mcp"}}
 	}`)
-	ev := mcpToolPre(ProviderCopilot, "", "read-file")
+	ev := mcpToolPre(ProviderCopilotCLI, "", "read-file")
 	mcpTestRunner(t).resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "read" || ev.Tool.MCP.Tool != "file" {
 		t.Errorf("expected the documented hyphen collision, got: %+v", ev.Tool.MCP)
@@ -986,7 +986,7 @@ func TestResolveMCPCopilotLongestPrefixWins(t *testing.T) {
 			"a-b": {"url": "https://long.example.com"}
 		}
 	}`)
-	ev := mcpToolPre(ProviderCopilot, "", "a-b-do")
+	ev := mcpToolPre(ProviderCopilotCLI, "", "a-b-do")
 	mcpTestRunner(t).resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.Server != "a-b" || ev.Tool.MCP.Tool != "do" ||
 		ev.Tool.MCP.URL != "https://long.example.com" {
@@ -1020,28 +1020,28 @@ func TestResolveMCPCopilotProjectScope(t *testing.T) {
 	r := mcpTestRunner(t)
 
 	// Same name in both scopes: the workspace transport wins.
-	ev := mcpToolPre(ProviderCopilot, cwd, "github-create_issue")
+	ev := mcpToolPre(ProviderCopilotCLI, cwd, "github-create_issue")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://workspace.example.com/mcp" {
 		t.Errorf("workspace scope must outrank user scope: %+v", ev.Tool.MCP)
 	}
 
 	// .mcp.json is read too.
-	ev = mcpToolPre(ProviderCopilot, cwd, "tracker-list_issues")
+	ev = mcpToolPre(ProviderCopilotCLI, cwd, "tracker-list_issues")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://tracker.example.com/mcp" {
 		t.Errorf(".mcp.json server not resolved: %+v", ev.Tool.MCP)
 	}
 
 	// At workspace scope, .mcp.json takes precedence over .github/mcp.json.
-	ev = mcpToolPre(ProviderCopilot, cwd, "shared-search")
+	ev = mcpToolPre(ProviderCopilotCLI, cwd, "shared-search")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://root-file.example.com/mcp" {
 		t.Errorf(".mcp.json must outrank .github/mcp.json: %+v", ev.Tool.MCP)
 	}
 
 	// User scope still resolves for names the workspace does not define.
-	ev = mcpToolPre(ProviderCopilot, cwd, "notes-search")
+	ev = mcpToolPre(ProviderCopilotCLI, cwd, "notes-search")
 	r.resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://notes.example.com/mcp" {
 		t.Errorf("user scope must still resolve: %+v", ev.Tool.MCP)
@@ -1058,10 +1058,43 @@ func TestResolveMCPCopilotHomeOverride(t *testing.T) {
 	writeConfig(t, filepath.Join(dir, "mcp-config.json"), `{
 		"mcpServers": {"notes": {"url": "https://notes.example.com/mcp"}}
 	}`)
-	ev := mcpToolPre(ProviderCopilot, "", "notes-search")
+	ev := mcpToolPre(ProviderCopilotCLI, "", "notes-search")
 	mcpTestRunner(t).resolveMCP(ev)
 	if ev.Tool.MCP == nil || ev.Tool.MCP.URL != "https://notes.example.com/mcp" {
 		t.Errorf("COPILOT_HOME override not honoured: %+v", ev.Tool.MCP)
+	}
+}
+
+func TestResolveMCPVSCode(t *testing.T) {
+	isolateHome(t)
+	cwd := t.TempDir()
+	writeConfig(t, filepath.Join(cwd, ".vscode", "mcp.json"), `{
+		// VS Code uses a servers block and permits JSONC comments and trailing commas.
+		"servers": {
+			"github": {
+				"type": "http",
+				"url": "https://example.test/vscode",
+			},
+		},
+	}`)
+	writeConfig(t, filepath.Join(cwd, ".mcp.json"), `{
+		"mcpServers": {"My Long Server Name!!!": {"url": "https://example.test/root"}}
+	}`)
+	r := mcpTestRunner(t)
+	for _, tc := range []struct {
+		name, server, tool, url string
+	}{
+		{"mcp_github_list_issues", "github", "list_issues", "https://example.test/vscode"},
+		{"mcp_my_long_serve_search", "my_long_serve", "search", "https://example.test/root"},
+	} {
+		ev := mcpToolPre(ProviderVSCodeCopilot, cwd, tc.name)
+		r.resolveMCP(ev)
+		if ev.Tool.MCP == nil {
+			t.Fatalf("%s: MCP call was not recognized", tc.name)
+		}
+		if got := ev.Tool.MCP; got.Server != tc.server || got.Tool != tc.tool || got.URL != tc.url || !got.FromConfig {
+			t.Errorf("%s: VS Code MCP resolution = %+v", tc.name, got)
+		}
 	}
 }
 

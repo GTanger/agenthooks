@@ -89,7 +89,7 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindToolPre:         caps(CapDeny, CapAsk, CapUpdateInput),
 		KindPromptSubmitted: caps(CapDeny),
 	},
-	ProviderCopilot: {
+	ProviderCopilotCLI: {
 		// preToolUse and permissionRequest are the only decision-capable
 		// events: deny was observed enforced end to end, and it fires even
 		// under --allow-all/--yolo. prompt.submitted is deliberately an empty
@@ -101,6 +101,33 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindStop:         caps(CapContinueAgent),
 		KindSubagentStop: caps(CapContinueAgent),
 		KindSessionStart: caps(CapAddContext),
+	},
+	ProviderVSCodeCopilot: {
+		// Verified against the extension source, not the docs, which contradict
+		// themselves on placement. PreToolUse is the only event whose decision
+		// rides hookSpecificOutput; PostToolUse and UserPromptSubmit block via
+		// TOP-LEVEL decision/reason; Stop/SubagentStop block via NESTED
+		// decision/reason (encodeVSCode moves them). SessionStart/SubagentStart
+		// are processed with ignoreErrors and drop stopReason silently, so no
+		// CapStopAgent there. No CapReplaceOutput anywhere: updatedToolOutput is
+		// a Claude extension VS Code does not read. No CapAsk outside ToolPre.
+		// PostToolUse CapAddContext is contract-level: VS Code 1.135 accepts it
+		// and appends it to the tool result, but its panel path starts that async
+		// work without awaiting it (quirk #49). Keep the capability so the same
+		// documented payload works once the upstream race is fixed.
+		// permission.request, session.end, tool.error and notification are absent:
+		// VS Code never fires them.
+		//
+		// SubagentStart and CompactPre are observe-only in the public runner,
+		// so their upstream output channels are not capabilities here. Stop and
+		// SubagentStop cannot advertise CapStopAgent because StopDecision has no
+		// operation that sets it.
+		KindToolPre:         caps(CapDeny, CapAsk, CapAllow, CapUpdateInput, CapAddContext, CapSystemMessage, CapStopAgent),
+		KindToolPost:        caps(CapAddContext, CapSystemMessage, CapStopAgent),
+		KindPromptSubmitted: caps(CapDeny, CapAddContext, CapSystemMessage, CapStopAgent),
+		KindSessionStart:    caps(CapAddContext, CapSystemMessage),
+		KindStop:            caps(CapContinueAgent, CapSystemMessage),
+		KindSubagentStop:    caps(CapContinueAgent, CapSystemMessage),
 	},
 	ProviderKimi: {
 		// Only UserPromptSubmit, PreToolUse and Stop are blockable; JSON

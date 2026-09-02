@@ -1,1 +1,1 @@
-{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":"{\"command\":\"echo hello-from-gram\",\"description\":\"Echo hello-from-gram\"}"}
+{"sessionId":"sess-copilot-1","timestamp":1786820437717,"cwd":"/work/repo","toolName":"bash","toolArgs":{"command":"echo hello-from-gram","description":"Echo hello-from-gram"}}

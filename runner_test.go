@@ -537,7 +537,7 @@ func TestArgvPayloadMode(t *testing.T) {
 func TestUndetectableProviderNoOps(t *testing.T) {
 	for _, v := range []string{
 		"CURSOR_VERSION", "CURSOR_TRACE_ID", "CURSOR_AGENT", "CODEX_HOME", "CODEX_SANDBOX",
-		"GEMINI_CWD", "GEMINI_CLI", "OPENCODE_SERVER", "OPENCODE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT",
+		"GEMINI_CWD", "GEMINI_CLI", "OPENCODE_SERVER", "OPENCODE", "CLAUDECODE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT",
 	} {
 		t.Setenv(v, "")
 	}

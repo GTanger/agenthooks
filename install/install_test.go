@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -411,7 +412,7 @@ func TestRenderOpenCodeShim(t *testing.T) {
 //   - bash/powershell keys (Copilot fills both from command; splitting them
 //     here would render the argv twice with no test on the second copy).
 func TestRenderCopilotPlugin(t *testing.T) {
-	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin})
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopePlugin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +459,7 @@ func TestRenderCopilotPlugin(t *testing.T) {
 	if pre[0].Type != "command" || pre[0].TimeoutSec != 30 {
 		t.Errorf("preToolUse entry wrong: %+v", pre[0])
 	}
-	if !strings.Contains(pre[0].Command, "agenthooks run --provider=copilot") {
+	if !strings.Contains(pre[0].Command, "agenthooks run --provider=copilot-cli") {
 		t.Errorf("command wrong: %q", pre[0].Command)
 	}
 	if len(pre[0].Bash) > 0 || len(pre[0].PowerShell) > 0 {
@@ -474,13 +475,13 @@ func TestRenderCopilotPlugin(t *testing.T) {
 func TestRenderCopilotScopes(t *testing.T) {
 	// Project scope goes to .github/hooks/, user scope to hooks/hooks.json
 	// under Target.Dir (~/.copilot). Plugin scope has nowhere to put the name.
-	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeProject})
+	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopeProject})
 	if err != nil {
 		t.Fatal(err)
 	}
 	readRendered(t, proj, ".github/hooks/agenthooks.json")
 
-	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilot, Scope: ScopeUser})
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopeUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +489,131 @@ func TestRenderCopilotScopes(t *testing.T) {
 
 	m := testManifest()
 	m.Identity.Name = ""
-	if _, err := Render(m, Target{Provider: agenthooks.ProviderCopilot, Scope: ScopePlugin}); err == nil {
+	if _, err := Render(m, Target{Provider: agenthooks.ProviderCopilotCLI, Scope: ScopePlugin}); err == nil {
 		t.Error("plugin scope with no Identity.Name must fail, not emit a nameless package")
+	}
+}
+
+// TestRenderVSCodeScopes pins the two paths and the basename. Both directories
+// are globbed by VS Code AND by the Copilot CLI, so the basename is the only
+// thing keeping this file from colliding with render_copilot.go's — and
+// agenthooks-vscode.json is neither settings.json nor hooks.json, so the file
+// stays whole-file owned instead of being merged into.
+func TestRenderVSCodeScopes(t *testing.T) {
+	proj, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRendered(t, proj, ".github/hooks/agenthooks-vscode.json")
+
+	user, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readRendered(t, user, "hooks/agenthooks-vscode.json") // Target.Dir is ~/.copilot
+	if isMergeableJSON("hooks/agenthooks-vscode.json") {
+		t.Error("agenthooks-vscode.json must not be merge-eligible; a merge would fold it into the CLI's config")
+	}
+
+	if _, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopePlugin}); err == nil {
+		t.Error("plugin scope must fail: VS Code loads plugin hooks through ~/.copilot, which user scope already covers")
+	}
+
+	// PascalCase event keys, one per declared kind. A camelCase key here would
+	// still resolve in VS Code (it accepts the CLI's names) but would pick up
+	// the CLI's event vocabulary, where Stop is spelled agentStop.
+	var cfg struct {
+		Hooks map[string][]struct {
+			Type       string `json:"type"`
+			Command    string `json:"command"`
+			Timeout    int    `json:"timeout"`
+			TimeoutSec int    `json:"timeoutSec"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"PreToolUse", "Stop", "PostToolUse"} {
+		if len(cfg.Hooks[event]) != 1 {
+			t.Fatalf("%s not registered: %v", event, cfg.Hooks)
+		}
+	}
+	if len(cfg.Hooks) != 3 {
+		t.Errorf("hooks = %v, want one entry per declared kind", cfg.Hooks)
+	}
+	pre := cfg.Hooks["PreToolUse"][0]
+	if pre.Type != "command" {
+		t.Errorf("type = %q, want command", pre.Type)
+	}
+	if !strings.Contains(pre.Command, "agenthooks run --provider=vscode-copilot") {
+		t.Errorf("command wrong: %q", pre.Command)
+	}
+	// VS Code parses matcher values and ignores them, so --filter is the only
+	// enforcement that is actually true.
+	if !strings.Contains(pre.Command, "--filter=") {
+		t.Errorf("no --filter in %q; VS Code ignores matchers, so a scoped hook would fire on every tool", pre.Command)
+	}
+}
+
+// TestRenderVSCodeOmissions pins the keys whose wrong presence or absence fails
+// silently rather than loudly: a matcher that reads as enforcement VS Code does
+// not perform, a version key no VS Code example carries (an unknown key is a
+// schema-validation risk), bash/powershell keys VS Code does not understand at
+// all (its platform override is windows), and the two unreconciled timeout
+// spellings — the reference table says timeout, a usage example says
+// timeoutSec, and reading the missing one silently means the 30s default.
+func TestRenderVSCodeOmissions(t *testing.T) {
+	fsys, err := Render(testManifest(), Target{Provider: agenthooks.ProviderVSCodeCopilot, Scope: ScopeProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readRendered(t, fsys, ".github/hooks/agenthooks-vscode.json")
+	for _, key := range []string{`"matcher"`, `"version"`, `"bash"`, `"powershell"`, `"osx"`} {
+		if bytes.Contains(raw, []byte(key)) {
+			t.Errorf("%s key present:\n%s", key, raw)
+		}
+	}
+	var cfg struct {
+		Hooks map[string][]struct {
+			Timeout    *int `json:"timeout"`
+			TimeoutSec *int `json:"timeoutSec"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	pre := cfg.Hooks["PreToolUse"][0]
+	if pre.Timeout == nil || pre.TimeoutSec == nil || *pre.Timeout != 30 || *pre.TimeoutSec != 30 {
+		t.Errorf("both timeout spellings must carry the same value, got timeout=%v timeoutSec=%v", pre.Timeout, pre.TimeoutSec)
+	}
+	stop := cfg.Hooks["Stop"][0]
+	if stop.Timeout == nil || *stop.Timeout != 60 {
+		t.Errorf("Stop timeout = %v, want the 60s default", stop.Timeout)
+	}
+}
+
+// TestHookCommandQuotesSpacedBinary pins the quoting of a consumer binary whose
+// path contains spaces. The dialect follows the HOST OS, not the provider
+// (shellQuote, install.go:355-374): configs are rendered on the machine that
+// runs them, cmd.exe has no single-quote syntax and POSIX shells have no
+// cmd-style escaping.
+//
+// The Windows form is cmd.exe's, and deliberately so: PowerShell parses a
+// statement that begins with a quote as an expression, so it needs a leading
+// call operator (& "C:\Program Files\...") that cmd.exe in turn rejects — no
+// single string is valid in both. Both shells are reachable on Windows (the
+// Copilot CLI copies command into its powershell key, render_copilot.go:34-36),
+// so if a spaced path is ever observed failing under PowerShell the fix is a
+// per-shell rendering for those providers, not a change to this quoting.
+func TestHookCommandQuotesSpacedBinary(t *testing.T) {
+	m := testManifest()
+	m.Command = []string{"/opt/My Hooks/myhooks"}
+	want := `'/opt/My Hooks/myhooks' agenthooks run --provider=vscode-copilot`
+	if runtime.GOOS == "windows" {
+		want = `"/opt/My Hooks/myhooks" agenthooks run --provider=vscode-copilot`
+	}
+	got := hookCommand(m, agenthooks.ProviderVSCodeCopilot, m.Hooks[0])
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("spaced binary path unquoted or wrong dialect:\n got %s\nwant prefix %s", got, want)
 	}
 }

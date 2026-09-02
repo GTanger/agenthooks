@@ -97,6 +97,52 @@ func TestDecodeClaudeSkillPostToolUseBackfillsModelOutput(t *testing.T) {
 	}
 }
 
+// The Skill backfill exists because Claude Code reports only the skill name and
+// resolves the manifest from Claude's own on-disk layout. Other providers'
+// real tool output must survive to the handler.
+func TestDecodeClaudeShapedSkillBackfillsOnlyForClaudeCode(t *testing.T) {
+	isolateClaudeSkillRoots(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	cwd := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeSkillManifest(t, filepath.Join(repo, ".claude", "skills", "review"), "manifest")
+	payload, err := json.Marshal(map[string]any{
+		"session_id":      "sess-skill",
+		"cwd":             cwd,
+		"hook_event_name": "PostToolUse",
+		"tool_name":       "Skill",
+		"tool_input":      map[string]any{"skill": "review"},
+		"tool_response":   "provider output",
+		"tool_use_id":     "toolu_skill",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		provider Provider
+		want     string
+	}{
+		{ProviderClaudeCode, `"manifest"`},
+		{ProviderVSCodeCopilot, `"provider output"`},
+		{ProviderCopilotCLI, `"provider output"`},
+	} {
+		typed, err := decodePayload(tc.provider, VariantUnknown, DetectionConfig, testNow, payload)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.provider, err)
+		}
+		event, ok := typed.(*ToolPostEvent)
+		if !ok {
+			t.Fatalf("%s decoded %T, want *ToolPostEvent", tc.provider, typed)
+		}
+		if string(event.Output) != tc.want {
+			t.Errorf("%s Output = %s, want %s", tc.provider, event.Output, tc.want)
+		}
+	}
+}
+
 func TestDecodeClaudeMCP(t *testing.T) {
 	typed, err := decodeClaude(VariantUnknown, DetectionConfig, testNow, fixture(t, "claude/pre_tool_use_mcp.json"))
 	if err != nil {
