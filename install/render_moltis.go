@@ -95,10 +95,25 @@ func renderMoltis(m Manifest, t Target) (fs.FS, error) {
 
 func combineMoltisSpecs(specs []HookSpec) HookSpec {
 	combined := specs[0]
+	matchAll := combined.Tools.IsEmpty()
+	if matchAll {
+		combined.Tools = ToolMatcher{}
+	}
 	for _, spec := range specs[1:] {
 		combined.Blocking = combined.Blocking || spec.Blocking
 		if spec.Timeout > combined.Timeout {
 			combined.Timeout = spec.Timeout
+		}
+		// Specs sharing a native event are alternatives. One unscoped spec
+		// therefore makes the union match all; retaining only the scoped names
+		// would silently stop the unscoped handler from receiving other tools.
+		if matchAll {
+			continue
+		}
+		if spec.Tools.IsEmpty() {
+			combined.Tools = ToolMatcher{}
+			matchAll = true
+			continue
 		}
 		combined.Tools.Names = append(combined.Tools.Names, spec.Tools.Names...)
 		combined.Tools.Canonical = append(combined.Tools.Canonical, spec.Tools.Canonical...)

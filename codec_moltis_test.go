@@ -31,16 +31,25 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	post := typed.(*ToolPostEvent)
+	post, ok := typed.(*ToolPostEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPostEvent", typed)
+	}
 	if post.Kind != KindToolPost || post.Failed || !bytes.Contains(post.Output, []byte(`"exit_code": 0`)) {
 		t.Errorf("successful post wrong: %+v output=%s", post, post.Output)
+	}
+	if post.Tool.RawInput != nil || string(post.Tool.Input) != "{}" {
+		t.Errorf("unavailable Moltis post arguments must be RawInput=nil, Input={}; got raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
 	}
 
 	typed, err = decodeMoltis(VariantUnknown, DetectionConfig, testNow, fixture(t, "moltis/after_tool_call_failure.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed := typed.(*ToolPostEvent)
+	failed, ok := typed.(*ToolPostEvent)
+	if !ok {
+		t.Fatalf("decoded %T, want *ToolPostEvent", typed)
+	}
 	if failed.Kind != KindToolError || !failed.Failed || failed.Error != "permission denied" {
 		t.Errorf("failed post wrong: %+v", failed)
 	}
@@ -152,6 +161,38 @@ func TestMoltisRunEncodesBlockModifyAndContext(t *testing.T) {
 		}
 		if reply.Action != "modify" || !strings.HasSuffix(reply.Data.Content, "\n\nportable context marker") {
 			t.Errorf("reply = %+v", reply)
+		}
+	})
+
+	t.Run("append context after middleware prompt rewrite", func(t *testing.T) {
+		r := quietRunner()
+		r.Use(func(ctx context.Context, typed any, next Next) (Decision, error) {
+			prompt, ok := typed.(*PromptEvent)
+			if !ok {
+				t.Fatalf("middleware received %T, want *PromptEvent", typed)
+			}
+			prompt.Prompt = "rewritten by middleware"
+			return next(ctx, typed)
+		})
+		r.OnPromptSubmitted(func(context.Context, *PromptEvent) (PromptDecision, error) {
+			return AcceptPrompt().WithContext("portable context marker"), nil
+		})
+		var stdout, stderr bytes.Buffer
+		code := r.Run(context.Background(), []string{"agenthooks", "run", "--provider=moltis"},
+			bytes.NewReader(fixture(t, "moltis/message_received.json")), &stdout, &stderr)
+		if code != 0 || stderr.Len() != 0 {
+			t.Fatalf("code=%d stderr=%q", code, stderr.String())
+		}
+		var reply struct {
+			Data struct {
+				Content string `json:"content"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &reply); err != nil {
+			t.Fatal(err)
+		}
+		if reply.Data.Content != "rewritten by middleware\n\nportable context marker" {
+			t.Errorf("middleware prompt rewrite was lost: %q", reply.Data.Content)
 		}
 	})
 

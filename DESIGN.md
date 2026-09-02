@@ -2,7 +2,7 @@
 
 A Go library for authoring coding-agent hooks once and running them everywhere:
 Claude Code, Cursor (IDE + CLI + cloud), OpenAI Codex, Gemini CLI, OpenCode,
-OpenClaw, Kimi Code, GitHub Copilot CLI, and Copilot Chat in VS Code.
+OpenClaw, Moltis, Kimi Code, GitHub Copilot CLI, and Copilot Chat in VS Code.
 Moltis is supported as its own shell-hook dialect; its OpenClaw import is not
 treated as wire compatibility.
 

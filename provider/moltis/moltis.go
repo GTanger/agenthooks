@@ -23,6 +23,18 @@ type ChannelBinding struct {
 	Extra       map[string]json.RawMessage `json:"-"`
 }
 
+// UnmarshalJSON preserves fields added to Moltis' nested channel provenance
+// block just as view() preserves unknown top-level payload fields.
+func (c *ChannelBinding) UnmarshalJSON(data []byte) error {
+	type rawChannelBinding ChannelBinding
+	var decoded rawChannelBinding
+	if err := jsonx.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = ChannelBinding(decoded)
+	return nil
+}
+
 type BeforeAgentStartInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`

@@ -112,7 +112,10 @@ func decodeMoltis(v Variant, conf DetectionConfidence, now time.Time, payload []
 		if len(bytes.TrimSpace(output)) == 0 {
 			output = json.RawMessage("null")
 		}
-		tool := makeToolCall(base.Session, in.ToolName, "", json.RawMessage("{}"), json.RawMessage("{}"))
+		// Moltis does not include the original arguments on AfterToolCall. Keep
+		// the normalized Input object-shaped, but leave RawInput nil so a
+		// consumer can distinguish unavailable data from a genuine {} input.
+		tool := makeToolCall(base.Session, in.ToolName, "", nil, nil)
 		failed := in.Success != nil && !*in.Success
 		return &ToolPostEvent{
 			Event:  base,
@@ -149,7 +152,7 @@ func moltisToolError(result json.RawMessage, failed bool) string {
 	return "Moltis tool call failed"
 }
 
-func encodeMoltis(base *Event, d decisionCore) (wireResponse, error) {
+func encodeMoltis(typed any, base *Event, d decisionCore) (wireResponse, error) {
 	if d.blocks() {
 		reason := d.reason
 		if reason == "" {
@@ -166,10 +169,14 @@ func encodeMoltis(base *Event, d decisionCore) (wireResponse, error) {
 		}
 	case KindPromptSubmitted:
 		if len(d.context) > 0 {
-			var content string
-			if err := json.Unmarshal(rawField(base.Raw, "content"), &content); err != nil {
-				return wireResponse{}, fmt.Errorf("agenthooks: decode Moltis prompt for context append: %w", err)
+			prompt, ok := typed.(*PromptEvent)
+			if !ok {
+				return wireResponse{}, fmt.Errorf("agenthooks: Moltis prompt encoded from %T", typed)
 			}
+			// The typed projection is authoritative after middleware. Raw remains
+			// verbatim for fidelity, but using its stale content here would discard
+			// an in-process prompt rewrite before appending additional context.
+			content := prompt.Prompt
 			context := joinContext(d.context)
 			if content == "" {
 				content = context

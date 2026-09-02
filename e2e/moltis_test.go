@@ -70,7 +70,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 		return fileExists(allowed) && fileContains(rec.Events, `"native":"AfterToolCall"`)
 	}, "allowed tool.post", logPath)
 	waitMoltis(t, 2*time.Minute, func() bool {
-		return moltisHistoryContains(t, client, port, "agenthooks-e2e-allow", "assistant", "AGENTHOOKS_MOLTIS_CONTEXT_OK")
+		return moltisHistoryContains(client, port, "agenthooks-e2e-allow", "assistant", "AGENTHOOKS_MOLTIS_CONTEXT_OK")
 	}, "prompt context in the model response", logPath)
 	evs := rec.events(t)
 	requireKinds(t, evs, agenthooks.KindPromptSubmitted, agenthooks.KindToolPre, agenthooks.KindToolPost)
@@ -89,8 +89,9 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 			"model":   model,
 		})
 	waitMoltis(t, 2*time.Minute, func() bool {
-		return fileContains(denyRec.Events, `"denied":true`) &&
-			bytes.Contains(moltisHistory(t, client, port, "agenthooks-e2e-deny"), []byte("blocked by hook: blocked by agenthooks e2e"))
+		history, err := moltisHistory(client, port, "agenthooks-e2e-deny")
+		return err == nil && fileContains(denyRec.Events, `"denied":true`) &&
+			bytes.Contains(history, []byte("blocked by hook: blocked by agenthooks e2e"))
 	}, "denied tool result", logPath)
 	if fileExists(denied) {
 		t.Fatal("Moltis created the marker despite the portable Deny decision")
@@ -219,34 +220,40 @@ func startMoltisGateway(t *testing.T, bin, proj, configDir, dataDir string, port
 
 func postGraphQL(t *testing.T, client *http.Client, port int, query string, variables map[string]any) []byte {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	result, err := requestGraphQL(client, port, query, variables)
 	if err != nil {
 		t.Fatal(err)
-	}
-	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/graphql", port), "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	result, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK || bytes.Contains(result, []byte(`"errors"`)) {
-		t.Fatalf("Moltis GraphQL failed (%s): %s", resp.Status, result)
 	}
 	return result
 }
 
-func moltisHistory(t *testing.T, client *http.Client, port int, session string) []byte {
-	t.Helper()
-	return postGraphQL(t, client, port,
+func requestGraphQL(client *http.Client, port int, query string, variables map[string]any) ([]byte, error) {
+	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/graphql", port), "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	result, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK || bytes.Contains(result, []byte(`"errors"`)) {
+		return nil, fmt.Errorf("moltis GraphQL failed (%s): %s", resp.Status, result)
+	}
+	return result, nil
+}
+
+func moltisHistory(client *http.Client, port int, session string) ([]byte, error) {
+	return requestGraphQL(client, port,
 		"query($session:String!){chat{history(sessionKey:$session)}}",
 		map[string]any{"session": session})
 }
 
-func moltisHistoryContains(t *testing.T, client *http.Client, port int, session, role, substring string) bool {
-	t.Helper()
+func moltisHistoryContains(client *http.Client, port int, session, role, substring string) bool {
 	var response struct {
 		Data struct {
 			Chat struct {
@@ -257,8 +264,12 @@ func moltisHistoryContains(t *testing.T, client *http.Client, port int, session,
 			} `json:"chat"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(moltisHistory(t, client, port, session), &response); err != nil {
-		t.Fatal(err)
+	history, err := moltisHistory(client, port, session)
+	if err != nil {
+		return false
+	}
+	if err := json.Unmarshal(history, &response); err != nil {
+		return false
 	}
 	for _, message := range response.Data.Chat.History {
 		if message.Role == role && strings.Contains(message.Content, substring) {

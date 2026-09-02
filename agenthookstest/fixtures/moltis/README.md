@@ -21,11 +21,20 @@ They test decoding and forward compatibility, not observed runtime coverage.
 | `before_tool_call.json` | `BeforeToolCall` | Sanitized live `exec` payload; allow, block, and argument replacement observed |
 | `after_tool_call.json` | `AfterToolCall` | Sanitized live successful `exec` payload |
 | `after_tool_call_failure.json` | `AfterToolCall` | Schema-derived failure case; codec classification coverage |
+| `before_agent_start.json` | `BeforeAgentStart` | Schema-derived |
+| `after_llm_call.json` | `AfterLLMCall` | Schema-derived |
+| `after_compaction.json` | `AfterCompaction` | Schema-derived |
+| `message_sending.json` | `MessageSending` | Schema-derived; no production construction/dispatch site found at the pinned commit |
+| `message_sent.json` | `MessageSent` | Schema-derived; no production construction/dispatch site found at the pinned commit |
+| `tool_result_persist.json` | `ToolResultPersist` | Schema-derived |
 | `session_start.json` | `SessionStart` | Schema-derived |
 | `session_end.json` | `SessionEnd` | Schema-derived |
 | `before_llm_call.json` | `BeforeLLMCall` | Schema-derived |
 | `before_compaction.json` | `BeforeCompaction` | Schema-derived |
 | `agent_end.json` | `AgentEnd` | Schema-derived; no production construction/dispatch site found at the pinned commit |
+| `gateway_start.json` | `GatewayStart` | Schema-derived |
+| `gateway_stop.json` | `GatewayStop` | Schema-derived |
+| `command.json` | `Command` | Schema-derived |
 
 When re-qualifying a newer Moltis build, compare `HookEvent::ALL` and
 `HookPayload`, search the production tree for every payload construction and

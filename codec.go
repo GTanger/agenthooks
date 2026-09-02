@@ -107,7 +107,7 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		}
 		return wireResponse{Stdout: out}, nil
 	case ProviderMoltis:
-		return encodeMoltis(base, d)
+		return encodeMoltis(typed, base, d)
 	case ProviderKimi:
 		return encodeKimi(base, d)
 	case ProviderCopilotCLI:

@@ -2,6 +2,7 @@ package install
 
 import (
 	"io/fs"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -65,10 +66,37 @@ func TestRenderMoltisGroupsPostAndErrorOnce(t *testing.T) {
 		t.Fatalf("AfterToolCall must render once: %v", paths)
 	}
 	content := string(readRendered(t, fsys, paths[0]))
+	filter := `--filter='names=read;canonical=shell'`
+	if runtime.GOOS == "windows" {
+		filter = `--filter="names=read;canonical=shell"`
+	}
 	if !strings.Contains(content, `--timeout=9s`) ||
-		!strings.Contains(content, `--filter='names=read;canonical=shell'`) ||
+		!strings.Contains(content, filter) ||
 		!strings.Contains(content, `timeout = 9`) {
 		t.Errorf("grouped HOOK.md wrong:\n%s", content)
+	}
+}
+
+func TestRenderMoltisGroupedMatchAllDominatesScopedMatchers(t *testing.T) {
+	for _, specs := range [][]HookSpec{
+		{
+			{Kind: agenthooks.KindToolPost, Tools: ToolMatcher{}},
+			{Kind: agenthooks.KindToolError, Tools: ToolMatcher{Canonical: []agenthooks.CanonicalTool{agenthooks.ToolShell}}},
+		},
+		{
+			{Kind: agenthooks.KindToolPost, Tools: ToolMatcher{Names: []string{"read"}}},
+			{Kind: agenthooks.KindToolError, Tools: ToolMatcher{}},
+		},
+	} {
+		m := Manifest{Command: []string{"/usr/local/bin/myhooks"}, Hooks: specs}
+		fsys, err := Render(m, Target{Provider: agenthooks.ProviderMoltis, Scope: ScopeUser})
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(readRendered(t, fsys, "hooks/agenthooks-aftertoolcall/HOOK.md"))
+		if strings.Contains(content, "--filter=") {
+			t.Errorf("unscoped grouped spec must remain match-all:\n%s", content)
+		}
 	}
 }
 
