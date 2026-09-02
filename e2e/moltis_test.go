@@ -84,6 +84,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 		t.Fatalf("Moltis tool did not normalize as shell:\n%s", summarize(evs))
 	}
 	requireStableMoltisToolID(t, evs)
+	requireMoltisTurnCorrelation(t, evs)
 	requireMoltisMessageLifecycle(t, evs)
 
 	directDenyRec := recorder{Bin: rec.Bin, Events: filepath.Join(filepath.Dir(rec.Events), "direct-deny-events.jsonl")}
@@ -357,14 +358,20 @@ func hasCanonicalTool(evs []event, canonical agenthooks.CanonicalTool) bool {
 
 func requireStableMoltisToolID(t *testing.T, evs []event) {
 	t.Helper()
-	preIDs := make(map[string]bool)
-	postIDs := make(map[string]bool)
+	type toolPayload struct {
+		turnID    string
+		arguments string
+	}
+	preIDs := make(map[string]toolPayload)
+	postIDs := make(map[string]toolPayload)
 	for _, event := range evs {
 		if event.Typed || (event.Native != "BeforeToolCall" && event.Native != "AfterToolCall") {
 			continue
 		}
 		var payload struct {
 			ToolCallID string `json:"tool_call_id"`
+			TurnID     string `json:"turn_id"`
+			Arguments  any    `json:"arguments"`
 		}
 		if err := json.Unmarshal(event.Raw, &payload); err != nil {
 			t.Fatalf("decode Moltis tool hook payload: %v", err)
@@ -372,23 +379,72 @@ func requireStableMoltisToolID(t *testing.T, evs []event) {
 		if payload.ToolCallID == "" {
 			t.Fatalf("Moltis %s omitted tool_call_id: %s", event.Native, event.Raw)
 		}
+		if payload.TurnID == "" {
+			t.Fatalf("Moltis %s omitted turn_id: %s", event.Native, event.Raw)
+		}
+		arguments, err := json.Marshal(payload.Arguments)
+		if err != nil {
+			t.Fatalf("encode Moltis %s arguments: %v", event.Native, err)
+		}
+		if payload.Arguments == nil {
+			t.Fatalf("Moltis %s omitted arguments: %s", event.Native, event.Raw)
+		}
+		entry := toolPayload{turnID: payload.TurnID, arguments: string(arguments)}
 		if event.Native == "BeforeToolCall" {
-			preIDs[payload.ToolCallID] = true
+			preIDs[payload.ToolCallID] = entry
 		} else {
-			postIDs[payload.ToolCallID] = true
+			postIDs[payload.ToolCallID] = entry
 		}
 	}
 	if len(preIDs) == 0 || len(postIDs) == 0 {
 		t.Fatalf("missing Moltis tool lifecycle IDs; pre=%v post=%v", preIDs, postIDs)
 	}
-	for id := range preIDs {
-		if !postIDs[id] {
+	for id, pre := range preIDs {
+		post, ok := postIDs[id]
+		if !ok {
 			t.Fatalf("Moltis BeforeToolCall ID %q has no matching AfterToolCall; pre=%v post=%v", id, preIDs, postIDs)
+		}
+		if pre != post {
+			t.Fatalf("Moltis tool lifecycle correlation changed for %q: pre=%+v post=%+v", id, pre, post)
 		}
 	}
 	for id := range postIDs {
-		if !preIDs[id] {
+		if _, ok := preIDs[id]; !ok {
 			t.Fatalf("Moltis AfterToolCall ID %q has no matching BeforeToolCall; pre=%v post=%v", id, preIDs, postIDs)
+		}
+	}
+}
+
+func requireMoltisTurnCorrelation(t *testing.T, evs []event) {
+	t.Helper()
+	turnIDs := make(map[string]string)
+	for _, event := range evs {
+		if event.Typed {
+			continue
+		}
+		switch event.Native {
+		case "MessageReceived", "BeforeToolCall", "AfterToolCall", "AgentEnd":
+		default:
+			continue
+		}
+		var payload struct {
+			TurnID string `json:"turn_id"`
+		}
+		if err := json.Unmarshal(event.Raw, &payload); err != nil {
+			t.Fatalf("decode Moltis %s turn id: %v", event.Native, err)
+		}
+		if payload.TurnID == "" {
+			t.Fatalf("Moltis %s omitted turn_id: %s", event.Native, event.Raw)
+		}
+		turnIDs[event.Native] = payload.TurnID
+	}
+	want := turnIDs["MessageReceived"]
+	if want == "" {
+		t.Fatalf("missing MessageReceived turn id: %v", turnIDs)
+	}
+	for _, native := range []string{"BeforeToolCall", "AfterToolCall", "AgentEnd"} {
+		if got := turnIDs[native]; got != want {
+			t.Fatalf("Moltis %s turn_id = %q, want %q; all=%v", native, got, want, turnIDs)
 		}
 	}
 }

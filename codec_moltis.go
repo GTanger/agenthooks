@@ -49,6 +49,7 @@ var moltisNativeEvents = map[string]bool{
 type moltisIn struct {
 	Event        string          `json:"event"`
 	SessionKey   string          `json:"session_key"`
+	TurnID       string          `json:"turn_id"`
 	Model        string          `json:"model"`
 	Content      string          `json:"content"`
 	ToolCallID   string          `json:"tool_call_id"`
@@ -86,8 +87,9 @@ func decodeMoltis(v Variant, conf DetectionConfidence, now time.Time, payload []
 		Time:                now,
 		DetectionConfidence: conf,
 		Session: SessionInfo{
-			ID:    in.SessionKey,
-			Model: in.Model,
+			ID:     in.SessionKey,
+			TurnID: in.TurnID,
+			Model:  in.Model,
 		},
 		Raw: json.RawMessage(payload),
 	}
@@ -113,10 +115,14 @@ func decodeMoltis(v Variant, conf DetectionConfidence, now time.Time, payload []
 		if len(bytes.TrimSpace(output)) == 0 {
 			output = json.RawMessage("null")
 		}
-		// Moltis does not include the original arguments on AfterToolCall. Keep
-		// the normalized Input object-shaped, but leave RawInput nil so a
-		// consumer can distinguish unavailable data from a genuine {} input.
-		tool := makeToolCall(base.Session, in.ToolName, in.ToolCallID, nil, nil)
+		// Patched Moltis payloads carry the effective arguments after any pre-call
+		// rewrite. Older releases omit the field; nil RawInput preserves that
+		// distinction while makeToolCall keeps normalized Input object-shaped.
+		rawInput := in.Arguments
+		if len(bytes.TrimSpace(rawInput)) == 0 {
+			rawInput = nil
+		}
+		tool := makeToolCall(base.Session, in.ToolName, in.ToolCallID, rawInput, rawInput)
 		failed := in.Success != nil && !*in.Success
 		return &ToolPostEvent{
 			Event:  base,

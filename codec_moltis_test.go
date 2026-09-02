@@ -20,8 +20,11 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	if pre.Provider != ProviderMoltis || pre.Kind != KindToolPre || pre.Session.ID != "chat:main" {
 		t.Errorf("envelope wrong: %+v", pre.Event)
 	}
-	if pre.Tool.Name != "exec" || pre.Tool.Canonical != ToolShell || !pre.Tool.Synthesized {
+	if pre.Tool.Name != "exec" || pre.Tool.Canonical != ToolShell || pre.Tool.ID != "call-shared-1" || pre.Tool.Synthesized {
 		t.Errorf("tool wrong: %+v", pre.Tool)
+	}
+	if pre.Session.TurnID != "turn-shared-1" {
+		t.Errorf("turn id = %q", pre.Session.TurnID)
 	}
 	if string(pre.Tool.Input) != "{\n    \"command\": \"git status --short\"\n  }" {
 		t.Errorf("input not preserved: %s", pre.Tool.Input)
@@ -38,8 +41,9 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	if post.Kind != KindToolPost || post.Failed || !bytes.Contains(post.Output, []byte(`"exit_code": 0`)) {
 		t.Errorf("successful post wrong: %+v output=%s", post, post.Output)
 	}
-	if post.Tool.RawInput != nil || string(post.Tool.Input) != "{}" {
-		t.Errorf("unavailable Moltis post arguments must be RawInput=nil, Input={}; got raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
+	if !bytes.Contains(post.Tool.RawInput, []byte(`"command": "git status --short"`)) ||
+		!bytes.Equal(post.Tool.RawInput, post.Tool.Input) {
+		t.Errorf("Moltis post arguments not preserved; raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
 	}
 
 	typed, err = decodeMoltis(VariantUnknown, DetectionConfig, testNow, fixture(t, "moltis/after_tool_call_failure.json"))
@@ -52,6 +56,19 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	}
 	if failed.Kind != KindToolError || !failed.Failed || failed.Error != "permission denied" {
 		t.Errorf("failed post wrong: %+v", failed)
+	}
+}
+
+func TestDecodeMoltisLegacyPostKeepsMissingArgumentsDistinct(t *testing.T) {
+	typed, err := decodeMoltis(VariantUnknown, DetectionConfig, testNow, []byte(
+		`{"event":"AfterToolCall","session_key":"chat:main","tool_name":"exec","success":true,"result":{"exit_code":0}}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := typed.(*ToolPostEvent)
+	if post.Tool.RawInput != nil || string(post.Tool.Input) != "{}" {
+		t.Errorf("legacy missing arguments must remain distinguishable; raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
 	}
 }
 
@@ -108,6 +125,9 @@ func TestDecodeMoltisLifecycleAndExtensions(t *testing.T) {
 	if pe.Prompt != "please inspect the repository" || string(pe.RawField("future_field")) != `"preserved"` {
 		t.Errorf("prompt/raw fidelity wrong: %+v", pe)
 	}
+	if pe.Session.TurnID != "turn-shared-1" {
+		t.Errorf("prompt turn id = %q", pe.Session.TurnID)
+	}
 
 	stop, err := decodeMoltis(VariantUnknown, DetectionConfig, testNow, fixture(t, "moltis/agent_end.json"))
 	if err != nil {
@@ -115,6 +135,9 @@ func TestDecodeMoltisLifecycleAndExtensions(t *testing.T) {
 	}
 	if got := stop.(*StopEvent).FinalMessage; got != "finished" {
 		t.Errorf("final message = %q", got)
+	}
+	if got := stop.(*StopEvent).Session.TurnID; got != "turn-shared-1" {
+		t.Errorf("stop turn id = %q", got)
 	}
 }
 

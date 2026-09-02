@@ -29,7 +29,7 @@ func TestTypedViews(t *testing.T) {
 		}},
 		{"agent_end.json", "AgentEnd", func(e *agenthooks.Event) bool {
 			v, ok := AgentEnd(e)
-			return ok && v.Text == "finished" && v.Iterations == 3 && v.ToolCalls == 2
+			return ok && v.TurnID == "turn-shared-1" && v.Text == "finished" && v.Iterations == 3 && v.ToolCalls == 2
 		}},
 		{"before_llm_call.json", "BeforeLLMCall", func(e *agenthooks.Event) bool {
 			v, ok := BeforeLLMCall(e)
@@ -49,7 +49,7 @@ func TestTypedViews(t *testing.T) {
 		}},
 		{"message_received.json", "MessageReceived", func(e *agenthooks.Event) bool {
 			v, ok := MessageReceived(e)
-			return ok && v.Content != "" && v.ChannelBinding != nil &&
+			return ok && v.TurnID == "turn-shared-1" && v.Content != "" && v.ChannelBinding != nil &&
 				v.ChannelBinding.ChannelType == "telegram" && string(v.Extra["future_field"]) == `"preserved"`
 		}},
 		{"message_sending.json", "MessageSending", func(e *agenthooks.Event) bool {
@@ -62,11 +62,13 @@ func TestTypedViews(t *testing.T) {
 		}},
 		{"before_tool_call.json", "BeforeToolCall", func(e *agenthooks.Event) bool {
 			v, ok := BeforeToolCall(e)
-			return ok && v.ToolName == "exec" && v.Channel != nil && v.Channel.Surface == "web"
+			return ok && v.TurnID == "turn-shared-1" && v.ToolCallID == "call-shared-1" &&
+				v.ToolName == "exec" && v.Channel != nil && v.Channel.Surface == "web"
 		}},
 		{"after_tool_call_failure.json", "AfterToolCall", func(e *agenthooks.Event) bool {
 			v, ok := AfterToolCall(e)
-			return ok && !v.Success && len(v.Result) > 0
+			return ok && v.TurnID == "turn-shared-1" && v.ToolCallID == "call-shared-1" &&
+				!v.Success && len(v.Arguments) > 0 && len(v.Result) > 0
 		}},
 		{"tool_result_persist.json", "ToolResultPersist", func(e *agenthooks.Event) bool {
 			v, ok := ToolResultPersist(e)

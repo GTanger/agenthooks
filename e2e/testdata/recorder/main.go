@@ -49,6 +49,7 @@ type record struct {
 	Native     string          `json:"native"`
 	Kind       string          `json:"kind"`
 	Session    string          `json:"session_id,omitempty"`
+	TurnID     string          `json:"turn_id,omitempty"`
 	CWD        string          `json:"cwd,omitempty"`
 	Tool       string          `json:"tool,omitempty"`
 	Canonical  string          `json:"canonical,omitempty"`
@@ -78,6 +79,7 @@ func main() {
 			Native:     e.NativeName,
 			Kind:       string(e.Kind),
 			Session:    e.Session.ID,
+			TurnID:     e.Session.TurnID,
 			CWD:        e.Session.CWD,
 			Raw:        e.Raw,
 		})
@@ -92,6 +94,7 @@ func main() {
 			Native:     e.NativeName,
 			Kind:       string(e.Kind),
 			Session:    e.Session.ID,
+			TurnID:     e.Session.TurnID,
 			Prompt:     e.Prompt,
 		})
 		decision := agenthooks.AcceptPrompt()
@@ -111,6 +114,7 @@ func main() {
 			Native:    e.NativeName,
 			Kind:      string(e.Kind),
 			Session:   e.Session.ID,
+			TurnID:    e.Session.TurnID,
 			Tool:      e.Tool.Name,
 			Canonical: string(e.Tool.Canonical),
 			ToolInput: e.Tool.Input,
@@ -135,6 +139,7 @@ func main() {
 			Native:        e.NativeName,
 			Kind:          string(e.Kind),
 			Session:       e.Session.ID,
+			TurnID:        e.Session.TurnID,
 			Continued:     cont,
 			PrevContinued: e.PreviouslyContinued,
 			LoopCount:     e.LoopCount,

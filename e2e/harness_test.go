@@ -203,6 +203,7 @@ type event struct {
 	Native     string          `json:"native"`
 	Kind       string          `json:"kind"`
 	Session    string          `json:"session_id"`
+	TurnID     string          `json:"turn_id"`
 	CWD        string          `json:"cwd"`
 	Tool       string          `json:"tool"`
 	Canonical  string          `json:"canonical"`

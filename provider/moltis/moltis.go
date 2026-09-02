@@ -45,6 +45,7 @@ type BeforeAgentStartInput struct {
 type AgentEndInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	TurnID     string                     `json:"turn_id"`
 	Text       string                     `json:"text"`
 	Iterations int                        `json:"iterations"`
 	ToolCalls  int                        `json:"tool_calls"`
@@ -92,6 +93,7 @@ type AfterCompactionInput struct {
 type MessageReceivedInput struct {
 	Event          string                     `json:"event"`
 	SessionKey     string                     `json:"session_key"`
+	TurnID         string                     `json:"turn_id"`
 	Content        string                     `json:"content"`
 	Channel        *string                    `json:"channel"`
 	ChannelBinding *ChannelBinding            `json:"channel_binding"`
@@ -108,6 +110,7 @@ type MessageInput struct {
 type BeforeToolCallInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	TurnID     string                     `json:"turn_id"`
 	ToolCallID string                     `json:"tool_call_id"`
 	ToolName   string                     `json:"tool_name"`
 	Arguments  json.RawMessage            `json:"arguments"`
@@ -118,8 +121,10 @@ type BeforeToolCallInput struct {
 type AfterToolCallInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	TurnID     string                     `json:"turn_id"`
 	ToolCallID string                     `json:"tool_call_id"`
 	ToolName   string                     `json:"tool_name"`
+	Arguments  json.RawMessage            `json:"arguments"`
 	Success    bool                       `json:"success"`
 	Result     json.RawMessage            `json:"result"`
 	Channel    *ChannelBinding            `json:"channel"`
