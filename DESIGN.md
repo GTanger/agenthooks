@@ -729,11 +729,15 @@ while the codec maps the portable lifecycle subset and preserves every other
 event as `KindOther` with byte-identical `Raw`. `MessageReceived` and
 `BeforeToolCall` are the two decision surfaces used by the unified handlers.
 Prompt context is necessarily projected by appending it to inbound `content`;
-Moltis has no distinct additional-context channel. `AfterToolCall` omits both
-the original arguments and a call id, so its synthesized id is not evidence of
-pre/post correlation. AgentEnd, MessageSending, and MessageSent are declared
-but had no production dispatch site in the audited 20260902.01 source; they
-remain forward-compatible, not claimed runtime coverage. See quirks #50–#54.
+Moltis has no distinct additional-context channel. Official releases through
+20260902.02 omit both the original arguments and a call id from
+`AfterToolCall`; the codec therefore consumes a native `tool_call_id` when
+present and clearly marks its compatibility fallback as synthesized. Those
+releases also declare AgentEnd, MessageSending, and MessageSent without
+production dispatch sites. Upstream PR
+[moltis-org/moltis#1257](https://github.com/moltis-org/moltis/pull/1257) adds the
+stable ID and wires those lifecycle events; agenthooks remains compatible with
+both the released wire and the patched wire. See quirks #50–#54.
 
 ---
 

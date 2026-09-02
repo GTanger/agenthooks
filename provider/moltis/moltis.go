@@ -108,6 +108,7 @@ type MessageInput struct {
 type BeforeToolCallInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	ToolCallID string                     `json:"tool_call_id"`
 	ToolName   string                     `json:"tool_name"`
 	Arguments  json.RawMessage            `json:"arguments"`
 	Channel    *ChannelBinding            `json:"channel"`
@@ -117,6 +118,7 @@ type BeforeToolCallInput struct {
 type AfterToolCallInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	ToolCallID string                     `json:"tool_call_id"`
 	ToolName   string                     `json:"tool_name"`
 	Success    bool                       `json:"success"`
 	Result     json.RawMessage            `json:"result"`
@@ -127,6 +129,7 @@ type AfterToolCallInput struct {
 type ToolResultPersistInput struct {
 	Event      string                     `json:"event"`
 	SessionKey string                     `json:"session_key"`
+	ToolCallID string                     `json:"tool_call_id"`
 	ToolName   string                     `json:"tool_name"`
 	Result     json.RawMessage            `json:"result"`
 	Channel    *ChannelBinding            `json:"channel"`

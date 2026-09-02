@@ -55,6 +55,22 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	}
 }
 
+func TestDecodeMoltisUsesNativeStableToolCallID(t *testing.T) {
+	for _, payload := range []string{
+		`{"event":"BeforeToolCall","session_key":"chat:main","tool_call_id":"call-shared","tool_name":"exec","arguments":{"command":"pwd"}}`,
+		`{"event":"AfterToolCall","session_key":"chat:main","tool_call_id":"call-shared","tool_name":"exec","success":true,"result":{"exit_code":0}}`,
+	} {
+		typed, err := decodeMoltis(VariantUnknown, DetectionConfig, testNow, []byte(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tool := toolOf(typed)
+		if tool == nil || tool.ID != "call-shared" || tool.Synthesized {
+			t.Fatalf("tool identity = %+v", tool)
+		}
+	}
+}
+
 func TestDecodeMoltisLifecycleAndExtensions(t *testing.T) {
 	tests := []struct {
 		fixture string

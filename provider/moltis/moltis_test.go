@@ -121,3 +121,48 @@ func TestChannelBindingPreservesUnknownNestedFields(t *testing.T) {
 		t.Fatalf("unknown nested field not preserved: %+v", view.Channel.Extra)
 	}
 }
+
+func TestToolLifecycleViewsExposeStableCallID(t *testing.T) {
+	tests := []struct {
+		native string
+		raw    string
+		id     func(*agenthooks.Event) string
+	}{
+		{
+			native: "BeforeToolCall",
+			raw:    `{"event":"BeforeToolCall","session_key":"chat:main","tool_call_id":"call-shared","tool_name":"exec","arguments":{"command":"pwd"}}`,
+			id: func(event *agenthooks.Event) string {
+				view, _ := BeforeToolCall(event)
+				return view.ToolCallID
+			},
+		},
+		{
+			native: "AfterToolCall",
+			raw:    `{"event":"AfterToolCall","session_key":"chat:main","tool_call_id":"call-shared","tool_name":"exec","success":true,"result":{"exit_code":0}}`,
+			id: func(event *agenthooks.Event) string {
+				view, _ := AfterToolCall(event)
+				return view.ToolCallID
+			},
+		},
+		{
+			native: "ToolResultPersist",
+			raw:    `{"event":"ToolResultPersist","session_key":"chat:main","tool_call_id":"call-shared","tool_name":"exec","result":{"exit_code":0}}`,
+			id: func(event *agenthooks.Event) string {
+				view, _ := ToolResultPersist(event)
+				return view.ToolCallID
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.native, func(t *testing.T) {
+			event := &agenthooks.Event{
+				Provider:   agenthooks.ProviderMoltis,
+				NativeName: tc.native,
+				Raw:        []byte(tc.raw),
+			}
+			if got := tc.id(event); got != "call-shared" {
+				t.Fatalf("tool_call_id = %q, want call-shared", got)
+			}
+		})
+	}
+}

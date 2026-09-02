@@ -51,6 +51,7 @@ type moltisIn struct {
 	SessionKey   string          `json:"session_key"`
 	Model        string          `json:"model"`
 	Content      string          `json:"content"`
+	ToolCallID   string          `json:"tool_call_id"`
 	ToolName     string          `json:"tool_name"`
 	Arguments    json.RawMessage `json:"arguments"`
 	Success      *bool           `json:"success"`
@@ -105,7 +106,7 @@ func decodeMoltis(v Variant, conf DetectionConfidence, now time.Time, payload []
 		}
 		return &ToolPreEvent{
 			Event: base,
-			Tool:  makeToolCall(base.Session, in.ToolName, "", rawInput, rawInput),
+			Tool:  makeToolCall(base.Session, in.ToolName, in.ToolCallID, rawInput, rawInput),
 		}, nil
 	case "AfterToolCall":
 		output := in.Result
@@ -115,7 +116,7 @@ func decodeMoltis(v Variant, conf DetectionConfidence, now time.Time, payload []
 		// Moltis does not include the original arguments on AfterToolCall. Keep
 		// the normalized Input object-shaped, but leave RawInput nil so a
 		// consumer can distinguish unavailable data from a genuine {} input.
-		tool := makeToolCall(base.Session, in.ToolName, "", nil, nil)
+		tool := makeToolCall(base.Session, in.ToolName, in.ToolCallID, nil, nil)
 		failed := in.Success != nil && !*in.Success
 		return &ToolPostEvent{
 			Event:  base,

@@ -59,35 +59,52 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 
 	model := "lmstudio::" + rawModel
 	allowed := filepath.Join(proj, "allowed-marker.txt")
-	postGraphQL(t, client, port,
-		"mutation($message:String!,$session:String!,$model:String){chat{send(message:$message,sessionKey:$session,model:$model){ok}}}",
-		map[string]any{
-			"message": portableContextShellPrompt(allowed),
-			"session": "agenthooks-e2e-allow",
-			"model":   model,
-		})
+	postGraphQL(t, client, port, map[string]any{
+		"message": portableContextShellPrompt(allowed),
+		"session": "agenthooks-e2e-allow",
+		"model":   model,
+	})
 	waitMoltis(t, 2*time.Minute, func() bool {
 		return fileExists(allowed) && fileContains(rec.Events, `"native":"AfterToolCall"`)
 	}, "allowed tool.post", logPath)
 	waitMoltis(t, 2*time.Minute, func() bool {
 		return moltisHistoryContains(client, port, "agenthooks-e2e-allow", "assistant", "AGENTHOOKS_SHARED_CONTEXT_OK")
 	}, "prompt context in the model response", logPath)
+	waitMoltis(t, 30*time.Second, func() bool {
+		return fileContains(rec.Events, `"kind":"agent.stop"`)
+	}, "AgentEnd hook", logPath)
 	evs := rec.events(t)
-	requireKinds(t, evs, agenthooks.KindPromptSubmitted, agenthooks.KindToolPre, agenthooks.KindToolPost)
+	requireKinds(t, evs, agenthooks.KindPromptSubmitted, agenthooks.KindToolPre, agenthooks.KindToolPost, agenthooks.KindStop)
 	if !hasCanonicalTool(evs, agenthooks.ToolShell) {
 		t.Fatalf("Moltis tool did not normalize as shell:\n%s", summarize(evs))
+	}
+	requireStableMoltisToolID(t, evs)
+
+	directDenyRec := recorder{Bin: rec.Bin, Events: filepath.Join(filepath.Dir(rec.Events), "direct-deny-events.jsonl")}
+	setRecorderConfig(t, directDenyRec, recorderConfig{Deny: string(agenthooks.ToolShell)})
+	directDenied := filepath.Join(proj, "direct-denied-marker.txt")
+	postGraphQL(t, client, port, map[string]any{
+		"message": "/sh touch " + directDenied,
+		"session": "agenthooks-e2e-direct-deny",
+		"model":   model,
+	})
+	waitMoltis(t, 30*time.Second, func() bool {
+		history, err := moltisHistory(client, port, "agenthooks-e2e-direct-deny")
+		return err == nil && fileContains(directDenyRec.Events, `"denied":true`) &&
+			bytes.Contains(history, []byte("blocked by hook: blocked by agenthooks e2e"))
+	}, "direct /sh denial", logPath)
+	if fileExists(directDenied) {
+		t.Fatal("Moltis direct /sh bypassed the portable tool hook")
 	}
 
 	denyRec := recorder{Bin: rec.Bin, Events: filepath.Join(filepath.Dir(rec.Events), "deny-events.jsonl")}
 	setRecorderConfig(t, denyRec, recorderConfig{Deny: string(agenthooks.ToolShell)})
 	denied := filepath.Join(proj, "denied-marker.txt")
-	postGraphQL(t, client, port,
-		"mutation($message:String!,$session:String!,$model:String){chat{send(message:$message,sessionKey:$session,model:$model){ok}}}",
-		map[string]any{
-			"message": "Use the exec tool once to run exactly `touch " + denied + "`. If blocked, stop without another method.",
-			"session": "agenthooks-e2e-deny",
-			"model":   model,
-		})
+	postGraphQL(t, client, port, map[string]any{
+		"message": "Use the exec tool once to run exactly `touch " + denied + "`. If blocked, stop without another method.",
+		"session": "agenthooks-e2e-deny",
+		"model":   model,
+	})
 	waitMoltis(t, 2*time.Minute, func() bool {
 		history, err := moltisHistory(client, port, "agenthooks-e2e-deny")
 		return err == nil && fileContains(denyRec.Events, `"denied":true`) &&
@@ -101,13 +118,11 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 	rewritten := filepath.Join(proj, "rewritten-marker.txt")
 	setRecorderConfig(t, rewriteRec, recorderConfig{RewriteCommand: "touch " + rewritten})
 	original := filepath.Join(proj, "original-marker.txt")
-	postGraphQL(t, client, port,
-		"mutation($message:String!,$session:String!,$model:String){chat{send(message:$message,sessionKey:$session,model:$model){ok}}}",
-		map[string]any{
-			"message": "Use the exec tool once to run exactly `touch " + original + "`, then stop.",
-			"session": "agenthooks-e2e-rewrite",
-			"model":   model,
-		})
+	postGraphQL(t, client, port, map[string]any{
+		"message": "Use the exec tool once to run exactly `touch " + original + "`, then stop.",
+		"session": "agenthooks-e2e-rewrite",
+		"model":   model,
+	})
 	waitMoltis(t, 2*time.Minute, func() bool {
 		return fileExists(rewritten) && fileContains(rewriteRec.Events, `"rewritten":true`)
 	}, "rewritten tool input", logPath)
@@ -218,8 +233,9 @@ func startMoltisGateway(t *testing.T, bin, proj, configDir, dataDir string, port
 	return logPath, stop
 }
 
-func postGraphQL(t *testing.T, client *http.Client, port int, query string, variables map[string]any) []byte {
+func postGraphQL(t *testing.T, client *http.Client, port int, variables map[string]any) []byte {
 	t.Helper()
+	const query = "mutation($message:String!,$session:String!,$model:String){chat{send(message:$message,sessionKey:$session,model:$model){ok}}}"
 	result, err := requestGraphQL(client, port, query, variables)
 	if err != nil {
 		t.Fatal(err)
@@ -309,4 +325,35 @@ func hasCanonicalTool(evs []event, canonical agenthooks.CanonicalTool) bool {
 		}
 	}
 	return false
+}
+
+func requireStableMoltisToolID(t *testing.T, evs []event) {
+	t.Helper()
+	preIDs := make(map[string]bool)
+	postIDs := make(map[string]bool)
+	for _, event := range evs {
+		if event.Typed || (event.Native != "BeforeToolCall" && event.Native != "AfterToolCall") {
+			continue
+		}
+		var payload struct {
+			ToolCallID string `json:"tool_call_id"`
+		}
+		if err := json.Unmarshal(event.Raw, &payload); err != nil {
+			t.Fatalf("decode Moltis tool hook payload: %v", err)
+		}
+		if payload.ToolCallID == "" {
+			t.Fatalf("Moltis %s omitted tool_call_id: %s", event.Native, event.Raw)
+		}
+		if event.Native == "BeforeToolCall" {
+			preIDs[payload.ToolCallID] = true
+		} else {
+			postIDs[payload.ToolCallID] = true
+		}
+	}
+	for id := range preIDs {
+		if postIDs[id] {
+			return
+		}
+	}
+	t.Fatalf("no Moltis BeforeToolCall/AfterToolCall pair shared an ID; pre=%v post=%v", preIDs, postIDs)
 }

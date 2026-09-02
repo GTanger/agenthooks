@@ -41,3 +41,9 @@ When re-qualifying a newer Moltis build, compare `HookEvent::ALL` and
 registry dispatch site, then rerun `TestMoltisEventsAndDecisions`. An enum
 variant is only declared capability; it is not evidence that the runtime emits
 the event.
+
+The pinned release fixtures intentionally retain the old no-ID tool payloads.
+Forward-compatibility tests separately cover the native `tool_call_id` added by
+[moltis-org/moltis#1257](https://github.com/moltis-org/moltis/pull/1257), while
+the legacy fixtures keep proving that agenthooks marks fallback identities as
+synthesized instead of overstating correlation evidence.
