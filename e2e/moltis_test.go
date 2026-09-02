@@ -42,6 +42,7 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 		PromptContext: "Portable context marker: AGENTHOOKS_SHARED_CONTEXT_OK",
 	})
 	installHooks(t, rec, agenthooks.ProviderMoltis, install.ScopeUser, dataDir)
+	installMoltisNativeObservers(t, rec, dataDir, "MessageSending", "MessageSent")
 
 	port := unusedLocalPort(t)
 	writeMoltisE2EConfig(t, configDir, port, baseURL, rawModel)
@@ -73,12 +74,17 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 	waitMoltis(t, 30*time.Second, func() bool {
 		return fileContains(rec.Events, `"kind":"agent.stop"`)
 	}, "AgentEnd hook", logPath)
+	waitMoltis(t, 30*time.Second, func() bool {
+		return fileContains(rec.Events, `"native":"MessageSending"`) &&
+			fileContains(rec.Events, `"native":"MessageSent"`)
+	}, "outbound message lifecycle hooks", logPath)
 	evs := rec.events(t)
 	requireKinds(t, evs, agenthooks.KindPromptSubmitted, agenthooks.KindToolPre, agenthooks.KindToolPost, agenthooks.KindStop)
 	if !hasCanonicalTool(evs, agenthooks.ToolShell) {
 		t.Fatalf("Moltis tool did not normalize as shell:\n%s", summarize(evs))
 	}
 	requireStableMoltisToolID(t, evs)
+	requireMoltisMessageLifecycle(t, evs)
 
 	directDenyRec := recorder{Bin: rec.Bin, Events: filepath.Join(filepath.Dir(rec.Events), "direct-deny-events.jsonl")}
 	setRecorderConfig(t, directDenyRec, recorderConfig{Deny: string(agenthooks.ToolShell)})
@@ -128,6 +134,28 @@ func TestMoltisEventsAndDecisions(t *testing.T) {
 	}, "rewritten tool input", logPath)
 	if fileExists(original) {
 		t.Fatal("Moltis ran the original command instead of the portable input rewrite")
+	}
+}
+
+func installMoltisNativeObservers(t *testing.T, rec recorder, dataDir string, events ...string) {
+	t.Helper()
+	for _, event := range events {
+		dir := filepath.Join(dataDir, "hooks", "agenthooks-e2e-"+strings.ToLower(event))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		command := fmt.Sprintf("%q agenthooks run --provider=moltis --timeout=30s", rec.Bin)
+		content := fmt.Sprintf(`+++
+name = %q
+description = "Native Moltis lifecycle observer for agenthooks E2E."
+events = [%q]
+command = %q
+timeout = 30
++++
+`, "agenthooks-e2e:"+event, event, command)
+		if err := os.WriteFile(filepath.Join(dir, "HOOK.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -356,4 +384,35 @@ func requireStableMoltisToolID(t *testing.T, evs []event) {
 		}
 	}
 	t.Fatalf("no Moltis BeforeToolCall/AfterToolCall pair shared an ID; pre=%v post=%v", preIDs, postIDs)
+}
+
+func requireMoltisMessageLifecycle(t *testing.T, evs []event) {
+	t.Helper()
+	sendingIndex, sentIndex := -1, -1
+	sendingContent, sentContent := "", ""
+	for i, event := range evs {
+		if event.Typed || (event.Native != "MessageSending" && event.Native != "MessageSent") {
+			continue
+		}
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(event.Raw, &payload); err != nil {
+			t.Fatalf("decode Moltis %s payload: %v", event.Native, err)
+		}
+		if event.Native == "MessageSending" {
+			sendingIndex, sendingContent = i, payload.Content
+		} else {
+			sentIndex, sentContent = i, payload.Content
+		}
+	}
+	if sendingIndex < 0 || sentIndex < 0 {
+		t.Fatalf("missing Moltis outbound lifecycle events: sending=%d sent=%d", sendingIndex, sentIndex)
+	}
+	if sendingIndex >= sentIndex {
+		t.Fatalf("Moltis MessageSending must precede MessageSent: sending=%d sent=%d", sendingIndex, sentIndex)
+	}
+	if sendingContent == "" || sentContent != sendingContent {
+		t.Fatalf("Moltis outbound content mismatch: sending=%q sent=%q", sendingContent, sentContent)
+	}
 }
