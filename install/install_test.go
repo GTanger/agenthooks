@@ -303,6 +303,38 @@ func TestRenderCodexTrustResolvesSymlinkParentForMissingHome(t *testing.T) {
 	}
 }
 
+func TestInstallCodexTrustResolvesSymlinkParentForMissingHome(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "archive")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	linkedHome := filepath.Join(linkedParent, "nested", "codex-home")
+	realHome := filepath.Join(realParent, "nested", "codex-home")
+	target := Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: linkedHome}
+
+	if err := Install(context.Background(), testManifest(), target); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := os.ReadFile(filepath.Join(realHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(string(trust), `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("installed trust missing fresh-home identity %q:\n%s", key, trust)
+		}
+	}
+}
+
 func TestInstallCodexReplacesStaleTrustOutsideManagedRegion(t *testing.T) {
 	root := t.TempDir()
 	realHome := filepath.Join(root, "archive", "codex-home")

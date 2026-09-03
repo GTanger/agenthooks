@@ -186,7 +186,7 @@ func renderCodexTrustForMergedHooks(t Target, hooksJSON []byte) ([]byte, error) 
 		dir = absolute
 	}
 	sources := []string{filepath.Join(dir, "hooks.json")}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+	if resolved, err := evalSymlinksAllowMissing(dir); err == nil && resolved != dir {
 		sources = append(sources, filepath.Join(resolved, "hooks.json"))
 	}
 
