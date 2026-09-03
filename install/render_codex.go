@@ -1,6 +1,7 @@
 package install
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -139,4 +140,62 @@ func stripManagedTOMLRegion(existing string) string {
 	}
 	tail := existing[begin+end+len(tomlEndMarker):]
 	return existing[:begin] + strings.TrimPrefix(tail, "\n")
+}
+
+// renderCodexTrustForMergedHooks computes state keys after hooks.json has been
+// merged with foreign handlers. Their preceding groups change agenthooks'
+// actual group indexes, so hashes rendered from the standalone manifest would
+// be trusted under the wrong identities.
+func renderCodexTrustForMergedHooks(t Target, hooksJSON []byte) ([]byte, error) {
+	var config struct {
+		Hooks map[string][]claudeMatcherEntry `json:"hooks"`
+	}
+	if err := json.Unmarshal(hooksJSON, &config); err != nil {
+		return nil, fmt.Errorf("install: decode merged Codex hooks for trust: %w", err)
+	}
+
+	dir := t.Dir
+	if absolute, err := filepath.Abs(dir); err == nil {
+		dir = absolute
+	}
+	sources := []string{filepath.Join(dir, "hooks.json")}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+		sources = append(sources, filepath.Join(resolved, "hooks.json"))
+	}
+
+	type trustEntry struct {
+		key  string
+		hash string
+	}
+	var trust []trustEntry
+	for event, groups := range config.Hooks {
+		label, ok := codexEventLabel[event]
+		if !ok {
+			continue
+		}
+		for groupIndex, group := range groups {
+			for handlerIndex, hook := range group.Hooks {
+				if !strings.Contains(hook.Command, "agenthooks") {
+					continue
+				}
+				for _, source := range sources {
+					trust = append(trust, trustEntry{
+						key: fmt.Sprintf(
+							"%s:%s:%d:%d", source, label, groupIndex, handlerIndex,
+						),
+						hash: DefinitionHash(event, group.Matcher, hook.Command, hook.Timeout),
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(trust, func(i, j int) bool { return trust[i].key < trust[j].key })
+	var output strings.Builder
+	output.WriteString(tomlBeginMarker + "\n")
+	for _, entry := range trust {
+		fmt.Fprintf(&output, "\n[hooks.state.%s]\n", tomlString(entry.key))
+		fmt.Fprintf(&output, "trusted_hash = %s\n", tomlString(entry.hash))
+	}
+	output.WriteString("\n" + tomlEndMarker + "\n")
+	return []byte(output.String()), nil
 }

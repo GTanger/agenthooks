@@ -276,7 +276,7 @@ func TestInstallCodexReplacesStaleTrustOutsideManagedRegion(t *testing.T) {
 	if err := os.Symlink(realHome, linkedHome); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	logicalKey := filepath.Join(linkedHome, "hooks.json") + ":pre_tool_use:0:0"
+	logicalKey := filepath.Join(linkedHome, "hooks.json") + ":pre_tool_use:1:0"
 	existing := fmt.Sprintf(`[unrelated]
 value = "preserved"
 
@@ -286,7 +286,8 @@ trusted_hash = "sha256:stale"
 	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte(existing), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(realHome, "hooks.json"), []byte(`{"hooks":{}}`), 0o600); err != nil {
+	foreignHooks := `{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"foreign-hook check","timeout":10}]}]}}`
+	if err := os.WriteFile(filepath.Join(realHome, "hooks.json"), []byte(foreignHooks), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,6 +308,9 @@ trusted_hash = "sha256:stale"
 	}
 	if !strings.Contains(string(merged), `[unrelated]`) || !strings.Contains(string(merged), `value = "preserved"`) {
 		t.Fatalf("foreign TOML was not preserved:\n%s", merged)
+	}
+	if strings.Contains(string(merged), filepath.Join(linkedHome, "hooks.json")+":pre_tool_use:0:0") {
+		t.Fatalf("managed trust used the standalone rather than merged group index:\n%s", merged)
 	}
 }
 
