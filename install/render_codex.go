@@ -32,15 +32,18 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 	}
 	var trust []trustEntry
 	// Codex keys hook state by "<source>:<event_label>:<group>:<handler>"
-	// where source is the absolute path of the hooks.json it discovered, so
-	// Target.Dir must be the CODEX_HOME the config is installed into. Codex
-	// canonicalizes that path, so symlinks (e.g. /var -> /private/var on
-	// macOS) must be resolved or the state keys never match.
+	// where source is the absolute path of the hooks.json it discovered. Codex
+	// 0.152.1 on Linux retains the lexical CODEX_HOME symlink in that key,
+	// whereas other builds/platforms canonicalize it. Seed both identities when
+	// they differ so an archived/symlinked CODEX_HOME stays non-interactive.
 	dir := t.Dir
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = resolved
+	if absolute, err := filepath.Abs(dir); err == nil {
+		dir = absolute
 	}
-	source := filepath.Join(dir, "hooks.json")
+	sources := []string{filepath.Join(dir, "hooks.json")}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+		sources = append(sources, filepath.Join(resolved, "hooks.json"))
+	}
 	for _, spec := range m.Hooks {
 		event, ok := kindToCodex[spec.Kind]
 		if !ok {
@@ -58,10 +61,12 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 		if event == "SessionEnd" && secs > 3 {
 			secs = 3
 		}
-		trust = append(trust, trustEntry{
-			key:  fmt.Sprintf("%s:%s:%d:0", source, codexEventLabel[event], len(hooks[event])),
-			hash: DefinitionHash(event, matcher, command, secs),
-		})
+		for _, source := range sources {
+			trust = append(trust, trustEntry{
+				key:  fmt.Sprintf("%s:%s:%d:0", source, codexEventLabel[event], len(hooks[event])),
+				hash: DefinitionHash(event, matcher, command, secs),
+			})
+		}
 		hooks[event] = append(hooks[event], claudeMatcherEntry{
 			Matcher: matcher,
 			Hooks: []claudeHookCmd{{

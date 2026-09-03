@@ -234,6 +234,37 @@ func TestRenderCodexAsyncAndTrust(t *testing.T) {
 	}
 }
 
+func TestRenderCodexTrustSeedsLexicalAndResolvedSymlinkHomes(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "archive", "codex-home")
+	if err := os.MkdirAll(realHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedHome := filepath.Join(root, "codex-home")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	fsys, err := Render(testManifest(), Target{
+		Provider: agenthooks.ProviderCodex,
+		Scope:    ScopeUser,
+		Dir:      linkedHome,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := string(readRendered(t, fsys, "config.toml"))
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(trust, `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("trust seeding missing symlink identity %q:\n%s", key, trust)
+		}
+	}
+}
+
 // TestDefinitionHashCodexAlgorithm pins the exact identity serialization
 // Codex hashes (verified against codex-cli 0.142.4 trust state): sha256 over
 // compact, key-sorted JSON with HTML escaping disabled.
