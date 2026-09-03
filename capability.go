@@ -98,6 +98,12 @@ var capMatrix = map[Provider]map[EventKind]CapSet{
 		KindPromptSubmitted: caps(CapDeny, CapAddContext),
 		KindToolPre:         caps(CapDeny, CapUpdateInput),
 	},
+	ProviderAionrs: {
+		// Prompt stdout is appended to the current user turn. Pre-tool hooks
+		// block on a non-zero exit; all post/compact/stop output is telemetry.
+		KindPromptSubmitted: caps(CapAddContext),
+		KindToolPre:         caps(CapDeny),
+	},
 	ProviderCopilotCLI: {
 		// preToolUse and permissionRequest are the only decision-capable
 		// events: deny was observed enforced end to end, and it fires even

@@ -34,7 +34,7 @@ type wireResponse struct {
 // appends exit-0 stdout to the model context, so its no-op must be empty
 // stdout (quirk #23). Moltis also uses empty stdout for Continue (quirk #50).
 func noOpResponse(p Provider) wireResponse {
-	if p == ProviderCodex || p == ProviderKimi || p == ProviderMoltis {
+	if p == ProviderCodex || p == ProviderKimi || p == ProviderMoltis || p == ProviderAionrs {
 		return wireResponse{}
 	}
 	return wireResponse{Stdout: []byte("{}")}
@@ -59,6 +59,8 @@ func decodePayload(p Provider, v Variant, conf DetectionConfidence, now time.Tim
 		return decodeOpenClawLine(v, conf, now, payload)
 	case ProviderMoltis:
 		return decodeMoltis(v, conf, now, payload)
+	case ProviderAionrs:
+		return decodeAionrs(v, conf, now, payload)
 	case ProviderKimi:
 		return decodeKimi(v, conf, now, payload)
 	case ProviderCopilotCLI:
@@ -108,6 +110,8 @@ func encodeDecision(typed any, d decisionCore) (wireResponse, error) {
 		return wireResponse{Stdout: out}, nil
 	case ProviderMoltis:
 		return encodeMoltis(typed, base, d)
+	case ProviderAionrs:
+		return encodeAionrs(base, d)
 	case ProviderKimi:
 		return encodeKimi(base, d)
 	case ProviderCopilotCLI:

@@ -36,6 +36,17 @@ func TestParseArgsNoSentinel(t *testing.T) {
 	}
 }
 
+func TestParseArgsAionrsNativeEvent(t *testing.T) {
+	t.Parallel()
+	inv, err := parseArgs([]string{"agenthooks", "run", "--provider=aionrs", "--event=PostToolUse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.provider != ProviderAionrs || inv.nativeEvent != "PostToolUse" {
+		t.Fatalf("aionrs invocation = %+v", inv)
+	}
+}
+
 func TestDetectClaudeCodeMarker(t *testing.T) {
 	for _, v := range []string{
 		"CURSOR_VERSION", "CURSOR_TRACE_ID", "CURSOR_AGENT", "CODEX_HOME", "CODEX_SANDBOX",

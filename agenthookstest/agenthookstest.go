@@ -105,9 +105,9 @@ func AssertNoOp(tb testing.TB, provider agenthooks.Provider, res Result) {
 	}
 	got := strings.TrimSpace(string(res.Stdout))
 	switch provider {
-	case agenthooks.ProviderCodex, agenthooks.ProviderKimi:
+	case agenthooks.ProviderCodex, agenthooks.ProviderKimi, agenthooks.ProviderAionrs:
 		// Codex rejects unknown JSON; Kimi appends exit-0 stdout to the model
-		// context. Both need a truly empty no-op.
+		// context; aionrs prompt hooks do the same. All need a truly empty no-op.
 		if got != "" {
 			tb.Fatalf("%s no-op stdout = %q, want empty", provider, got)
 		}

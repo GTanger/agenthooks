@@ -21,6 +21,7 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenClaw   Provider = "openclaw"  // OpenClaw Gateway (typed plugin hooks via shim)
 	ProviderMoltis     Provider = "moltis"    // Moltis Gateway (process-per-event shell hooks)
+	ProviderAionrs     Provider = "aionrs"    // aionrs native lifecycle hooks (including AionUI's embedded agent)
 	ProviderKimi       Provider = "kimi-code" // Kimi Code CLI ("kimi" accepted as a flag alias)
 	// Copilot ships two dialects behind one product name, so a consumer
 	// switching on "is this Copilot?" must consider both constants.

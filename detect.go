@@ -24,6 +24,7 @@ type invocation struct {
 	payload     string
 	timeout     time.Duration
 	filter      *ToolMatcher
+	nativeEvent string
 }
 
 var validProviders = map[Provider]bool{
@@ -34,6 +35,7 @@ var validProviders = map[Provider]bool{
 	ProviderOpenCode:   true,
 	ProviderOpenClaw:   true,
 	ProviderMoltis:     true,
+	ProviderAionrs:     true,
 	ProviderKimi:       true,
 	ProviderCopilotCLI: true,
 	// VS Code ships no provider env marker and no field Claude Code doesn't
@@ -92,6 +94,8 @@ func parseArgs(args []string) (*invocation, error) {
 				return nil, err
 			}
 			inv.filter = &m
+		case strings.HasPrefix(a, "--event="):
+			inv.nativeEvent = strings.TrimPrefix(a, "--event=")
 		case strings.HasPrefix(a, "--"):
 			// Unknown flags are tolerated for forward compatibility with
 			// newer generated configs driving older library versions.

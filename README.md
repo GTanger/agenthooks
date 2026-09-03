@@ -15,7 +15,7 @@
 
 <p align="center">
   <h1 align="center"><b>agenthooks</b></h1>
-  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, Moltis, GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
+  <p align="center">Author coding-agent hooks once in Go; run them on Claude Code, Cursor, OpenAI Codex, Gemini CLI, OpenCode, Kimi Code, OpenClaw, Moltis, aionrs (including AionUI's embedded agent), GitHub Copilot CLI, and Copilot Chat in VS Code.</p>
   <p align="center">
     <!-- Go Doc Badge -->
     <a href="https://pkg.go.dev/github.com/speakeasy-api/agenthooks"><img alt="Go Doc" src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
@@ -122,7 +122,7 @@ degradation; stage errors return as errors.
 | Package | Purpose |
 |---|---|
 | `agenthooks` | Envelope, decisions, capability matrix, policy, runtime (`Main`/`Run`), quirk registry |
-| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,moltis,kimicode,copilot}` | Complete typed native structs with unknown-field capture — the fidelity guarantee |
+| `provider/{claudecode,codex,cursor,gemini,opencode,openclaw,moltis,kimicode,copilot}` plus the aionrs environment codec | Complete provider projections into typed lifecycle events |
 | `install` | One Go `Manifest` → correct `hooks.json` / `settings.json` / `config.toml` / plugin scaffolding per provider, workarounds baked in |
 | `transcript` | Best-effort JSONL transcript readers |
 | `agenthookstest` | Fixture corpus, in-process harness, fake-provider spawner |
@@ -154,7 +154,11 @@ on Claude cowork, backgrounder wrapper on Codex), Cursor `failClosed`, and
 Codex trust-hash pre-seeding. Moltis installs one TOML-frontmatter `HOOK.md`
 per native event under `hooks/` or `.moltis/hooks/`. Copilot configs omit `matcher` entirely: an
 empty matcher is a validation error there that discards the whole plugin hook
-config, and an absent one already means match-all.
+config, and an absent one already means match-all. aionrs installs managed
+`[[hooks.*]]` tables in user `config.toml` or project `.aionrs.toml`. Its shell
+hook API exposes lifecycle data through environment variables, so the generated
+command projects those values into a typed event. Prompt stdout adds context,
+pre-tool non-zero exit denies, and post/compact/stop remain observation-only.
 
 ## Semantics worth knowing
 

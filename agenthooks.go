@@ -311,6 +311,15 @@ func (r *Runner) Run(ctx context.Context, args []string, stdin io.Reader, stdout
 			r.logger.Error("agenthooks: reading stdin", "error", err)
 		}
 	}
+	if inv.provider == ProviderAionrs && len(payload) == 0 {
+		payload, err = aionrsPayloadFromEnv(inv.nativeEvent)
+		if err != nil {
+			r.logger.Error("agenthooks: building aionrs payload from environment", "error", err)
+			wire := noOpResponse(ProviderAionrs)
+			_, _ = stdout.Write(wire.Stdout)
+			return wire.ExitCode
+		}
+	}
 
 	provider, conf := detectProvider(inv, payload)
 	// The generated vscode-copilot file is loaded by the Copilot CLI too; when
