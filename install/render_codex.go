@@ -99,3 +99,44 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 		"config.toml": []byte(toml.String()),
 	}), nil
 }
+
+// mergeCodexTrustTOML replaces the managed trust region and removes stale
+// copies of those exact hook-state tables elsewhere in config.toml. Codex may
+// have persisted interactive trust before agenthooks began managing a hook;
+// leaving both copies makes the whole TOML document invalid.
+func mergeCodexTrustTOML(existing, rendered []byte) []byte {
+	targets := make(map[string]struct{})
+	for _, line := range strings.Split(string(rendered), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[hooks.state.") && strings.HasSuffix(line, "]") {
+			targets[line] = struct{}{}
+		}
+	}
+
+	withoutManaged := stripManagedTOMLRegion(string(existing))
+	var cleaned strings.Builder
+	skipping := false
+	for _, line := range strings.SplitAfter(withoutManaged, "\n") {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			_, skipping = targets[trimmed]
+		}
+		if !skipping {
+			cleaned.WriteString(line)
+		}
+	}
+	return mergeManagedTOML([]byte(cleaned.String()), rendered)
+}
+
+func stripManagedTOMLRegion(existing string) string {
+	begin := strings.Index(existing, tomlBeginMarker)
+	if begin < 0 {
+		return existing
+	}
+	end := strings.Index(existing[begin:], tomlEndMarker)
+	if end < 0 {
+		return existing[:begin]
+	}
+	tail := existing[begin+end+len(tomlEndMarker):]
+	return existing[:begin] + strings.TrimPrefix(tail, "\n")
+}

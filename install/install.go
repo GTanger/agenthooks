@@ -229,7 +229,11 @@ func plan(m Manifest, t Target) ([]plannedFile, error) {
 					final = merged
 				}
 			} else if isMergeableTOML(p) {
-				final = mergeManagedTOML(existing, content)
+				if t.Provider == agenthooks.ProviderCodex && filepath.Base(p) == "config.toml" {
+					final = mergeCodexTrustTOML(existing, content)
+				} else {
+					final = mergeManagedTOML(existing, content)
+				}
 			}
 			state := StateUpdate
 			if bytes.Equal(existing, final) {

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -262,6 +263,50 @@ func TestRenderCodexTrustSeedsLexicalAndResolvedSymlinkHomes(t *testing.T) {
 		if !strings.Contains(trust, `[hooks.state.`+tomlString(key)+`]`) {
 			t.Errorf("trust seeding missing symlink identity %q:\n%s", key, trust)
 		}
+	}
+}
+
+func TestInstallCodexReplacesStaleTrustOutsideManagedRegion(t *testing.T) {
+	root := t.TempDir()
+	realHome := filepath.Join(root, "archive", "codex-home")
+	if err := os.MkdirAll(realHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedHome := filepath.Join(root, "codex-home")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	logicalKey := filepath.Join(linkedHome, "hooks.json") + ":pre_tool_use:0:0"
+	existing := fmt.Sprintf(`[unrelated]
+value = "preserved"
+
+[hooks.state.%s]
+trusted_hash = "sha256:stale"
+`, tomlString(logicalKey))
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realHome, "hooks.json"), []byte(`{"hooks":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	target := Target{Provider: agenthooks.ProviderCodex, Scope: ScopeUser, Dir: linkedHome}
+	if err := Install(context.Background(), testManifest(), target); err != nil {
+		t.Fatal(err)
+	}
+	merged, err := os.ReadFile(filepath.Join(realHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := `[hooks.state.` + tomlString(logicalKey) + `]`
+	if count := strings.Count(string(merged), header); count != 1 {
+		t.Fatalf("logical trust table count = %d, want 1:\n%s", count, merged)
+	}
+	if strings.Contains(string(merged), "sha256:stale") {
+		t.Fatalf("stale trust hash survived:\n%s", merged)
+	}
+	if !strings.Contains(string(merged), `[unrelated]`) || !strings.Contains(string(merged), `value = "preserved"`) {
+		t.Fatalf("foreign TOML was not preserved:\n%s", merged)
 	}
 }
 
