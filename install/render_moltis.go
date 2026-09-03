@@ -119,7 +119,23 @@ func combineMoltisSpecs(specs []HookSpec) HookSpec {
 		combined.Tools.Canonical = append(combined.Tools.Canonical, spec.Tools.Canonical...)
 		combined.Tools.MCP = append(combined.Tools.MCP, spec.Tools.MCP...)
 	}
+	combined.Tools.Names = unique(combined.Tools.Names)
+	combined.Tools.Canonical = unique(combined.Tools.Canonical)
+	combined.Tools.MCP = unique(combined.Tools.MCP)
 	return combined
+}
+
+func unique[T comparable](values []T) []T {
+	seen := make(map[T]struct{}, len(values))
+	out := make([]T, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func moltisSlug(value string) string {

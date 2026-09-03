@@ -77,6 +77,25 @@ func TestRenderMoltisGroupsPostAndErrorOnce(t *testing.T) {
 	}
 }
 
+func TestRenderMoltisDeduplicatesGroupedMatchers(t *testing.T) {
+	matcher := ToolMatcher{Names: []string{"tra_capability"}, MCP: []string{"tra/*"}}
+	m := Manifest{
+		Command: []string{"/usr/local/bin/myhooks"},
+		Hooks: []HookSpec{
+			{Kind: agenthooks.KindToolPost, Tools: matcher},
+			{Kind: agenthooks.KindToolError, Tools: matcher},
+		},
+	}
+	fsys, err := Render(m, Target{Provider: agenthooks.ProviderMoltis, Scope: ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(readRendered(t, fsys, "hooks/agenthooks-aftertoolcall/HOOK.md"))
+	if strings.Count(content, "tra_capability") != 1 || strings.Count(content, "tra/*") != 1 {
+		t.Fatalf("grouped matcher contains duplicates:\n%s", content)
+	}
+}
+
 func TestRenderMoltisGroupedMatchAllDominatesScopedMatchers(t *testing.T) {
 	for _, specs := range [][]HookSpec{
 		{
