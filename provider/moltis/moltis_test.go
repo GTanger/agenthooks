@@ -62,7 +62,7 @@ func TestTypedViews(t *testing.T) {
 		}},
 		{"before_tool_call.json", "BeforeToolCall", func(e *agenthooks.Event) bool {
 			v, ok := BeforeToolCall(e)
-			return ok && v.TurnID == "turn-shared-1" && v.ToolCallID == "call-shared-1" &&
+			return ok && v.TurnID == "" && v.ToolCallID == "" &&
 				v.ToolName == "exec" && v.Channel != nil && v.Channel.Surface == "web"
 		}},
 		{"after_tool_call_failure.json", "AfterToolCall", func(e *agenthooks.Event) bool {

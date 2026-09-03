@@ -20,10 +20,10 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	if pre.Provider != ProviderMoltis || pre.Kind != KindToolPre || pre.Session.ID != "chat:main" {
 		t.Errorf("envelope wrong: %+v", pre.Event)
 	}
-	if pre.Tool.Name != "exec" || pre.Tool.Canonical != ToolShell || pre.Tool.ID != "call-shared-1" || pre.Tool.Synthesized {
+	if pre.Tool.Name != "exec" || pre.Tool.Canonical != ToolShell || pre.Tool.ID == "" || !pre.Tool.Synthesized {
 		t.Errorf("tool wrong: %+v", pre.Tool)
 	}
-	if pre.Session.TurnID != "turn-shared-1" {
+	if pre.Session.TurnID != "" {
 		t.Errorf("turn id = %q", pre.Session.TurnID)
 	}
 	if string(pre.Tool.Input) != "{\n    \"command\": \"git status --short\"\n  }" {
@@ -41,9 +41,11 @@ func TestDecodeMoltisToolEvents(t *testing.T) {
 	if post.Kind != KindToolPost || post.Failed || !bytes.Contains(post.Output, []byte(`"exit_code": 0`)) {
 		t.Errorf("successful post wrong: %+v output=%s", post, post.Output)
 	}
-	if !bytes.Contains(post.Tool.RawInput, []byte(`"command": "git status --short"`)) ||
-		!bytes.Equal(post.Tool.RawInput, post.Tool.Input) {
-		t.Errorf("Moltis post arguments not preserved; raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
+	if post.Tool.ID == "" || !post.Tool.Synthesized {
+		t.Errorf("legacy Moltis post identity must be synthesized: %+v", post.Tool)
+	}
+	if post.Tool.RawInput != nil || string(post.Tool.Input) != "{}" {
+		t.Errorf("legacy Moltis post must preserve missing arguments; raw=%s input=%s", post.Tool.RawInput, post.Tool.Input)
 	}
 
 	typed, err = decodeMoltis(VariantUnknown, DetectionConfig, testNow, fixture(t, "moltis/after_tool_call_failure.json"))

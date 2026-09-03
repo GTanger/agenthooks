@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -266,6 +267,42 @@ func TestRenderCodexTrustSeedsLexicalAndResolvedSymlinkHomes(t *testing.T) {
 	}
 }
 
+func TestRenderCodexTrustResolvesSymlinkParentForMissingHome(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "archive")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(root, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	linkedHome := filepath.Join(linkedParent, "nested", "codex-home")
+	realHome := filepath.Join(realParent, "nested", "codex-home")
+
+	fsys, err := Render(testManifest(), Target{
+		Provider: agenthooks.ProviderCodex,
+		Scope:    ScopeUser,
+		Dir:      linkedHome,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := string(readRendered(t, fsys, "config.toml"))
+	for _, source := range []string{
+		filepath.Join(linkedHome, "hooks.json"),
+		filepath.Join(realHome, "hooks.json"),
+	} {
+		key := source + ":pre_tool_use:0:0"
+		if !strings.Contains(trust, `[hooks.state.`+tomlString(key)+`]`) {
+			t.Errorf("trust seeding missing fresh-home identity %q:\n%s", key, trust)
+		}
+	}
+	if _, err := os.Stat(realHome); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Render created the target directory or returned an unexpected error: %v", err)
+	}
+}
+
 func TestInstallCodexReplacesStaleTrustOutsideManagedRegion(t *testing.T) {
 	root := t.TempDir()
 	realHome := filepath.Join(root, "archive", "codex-home")
@@ -287,6 +324,9 @@ trusted_hash = "sha256:stale"
 		t.Fatal(err)
 	}
 	foreignHooks := `{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"foreign-hook check","timeout":10}]}]}}`
+	if !json.Valid([]byte(foreignHooks)) {
+		t.Fatalf("test fixture is not valid JSON: %q", foreignHooks)
+	}
 	if err := os.WriteFile(filepath.Join(realHome, "hooks.json"), []byte(foreignHooks), 0o600); err != nil {
 		t.Fatal(err)
 	}

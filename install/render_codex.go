@@ -2,6 +2,7 @@ package install
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -42,7 +43,7 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 		dir = absolute
 	}
 	sources := []string{filepath.Join(dir, "hooks.json")}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+	if resolved, err := evalSymlinksAllowMissing(dir); err == nil && resolved != dir {
 		sources = append(sources, filepath.Join(resolved, "hooks.json"))
 	}
 	for _, spec := range m.Hooks {
@@ -99,6 +100,32 @@ func renderCodex(m Manifest, t Target) (fs.FS, error) {
 		"hooks.json":  hooksJSON,
 		"config.toml": []byte(toml.String()),
 	}), nil
+}
+
+// evalSymlinksAllowMissing resolves the longest existing prefix of path and
+// then restores any missing suffix. Render must stay side-effect free, but a
+// fresh CODEX_HOME can still sit below a symlinked parent.
+func evalSymlinksAllowMissing(path string) (string, error) {
+	current := filepath.Clean(path)
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 // mergeCodexTrustTOML replaces the managed trust region and removes stale
